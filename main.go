@@ -691,7 +691,7 @@ func main() {
 		return args[*i], nil
 	}
 
-	i = 0
+	i := 0
 parseLoop:
 	for i < len(args) {
 		a := args[i]
