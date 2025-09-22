@@ -688,7 +688,8 @@ func main() {
 	// Parse options (robust)
 	// -----------------------
 	provided := map[string]bool{}
-	args := os.Args[1:]
+	rawArgs := os.Args[1:]
+	var positionalArgs []string
 
 	ACCESS_TOKEN := ""
 	SYS_PROMPT_FILE := ""
@@ -700,234 +701,202 @@ func main() {
 	// helper to get next argument (used when flag and its value are separate tokens)
 	nextArg := func(i *int) (string, error) {
 		*i++
-		if *i >= len(args) {
-			return "", fmt.Errorf("missing value for %s", args[*i-1])
+		if *i >= len(rawArgs) {
+			return "", fmt.Errorf("missing value for %s", rawArgs[*i-1])
 		}
-		return args[*i], nil
+		return rawArgs[*i], nil
 	}
 
 	i := 0
-parseLoop:
-	for i < len(args) {
-		a := args[i]
+	for i < len(rawArgs) {
+		a := rawArgs[i]
 
-		// support --flag=value and -f=value
-		if strings.HasPrefix(a, "--") {
-			kv := strings.SplitN(a, "=", 2)
-			key := kv[0]
-			val := ""
-			if len(kv) == 2 {
-				val = kv[1]
+		if a == "--" {
+			// stop parsing flags; remaining args are positional
+			positionalArgs = append(positionalArgs, rawArgs[i+1:]...)
+			break
+		}
+
+		if !strings.HasPrefix(a, "-") {
+			positionalArgs = append(positionalArgs, a)
+			i++
+			continue
+		}
+
+		// at this point, 'a' is a flag
+		key := a
+		val := ""
+		// handle --flag=value and -f=value
+		if strings.Contains(a, "=") {
+			parts := strings.SplitN(a, "=", 2)
+			key = parts[0]
+			val = parts[1]
+		}
+
+		switch key {
+		// flags that take a value
+		case "-m", "--model":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
+				}
+				val = v
 			}
-			switch key {
-			case "--reasoning":
-				if val == "" {
-					v, err := nextArg(&i)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-						os.Exit(1)
-					}
-					val = v
+			cfg["MODEL"] = val
+			provided["MODEL"] = true
+		case "-T", "--temperature":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
 				}
-				cfg["REASONING_EFFORT"] = val
-				provided["REASONING_EFFORT"] = true
-			case "--stop":
-				if val == "" {
-					v, err := nextArg(&i)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-						os.Exit(1)
-					}
-					val = v
+				val = v
+			}
+			cfg["TEMPERATURE"] = val
+			provided["TEMPERATURE"] = true
+		case "-P", "--top_p":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
 				}
-				cfg["STOP"] = val
-				provided["STOP"] = true
-			case "--prompt":
-				if val == "" {
-					v, err := nextArg(&i)
-					if err != nil {
-						fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-						os.Exit(1)
-					}
-					val = v
+				val = v
+			}
+			cfg["TOP_P"] = val
+			provided["TOP_P"] = true
+		case "-f", "--frequency_penalty":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
 				}
-				PROMPT_MODE = val
-			case "--no-stream":
-				cfg["STREAM"] = "false"
-				provided["STREAM"] = true
-			case "--stream=true":
+				val = v
+			}
+			cfg["FREQUENCY_PENALTY"] = val
+			provided["FREQUENCY_PENALTY"] = true
+		case "-r", "--presence_penalty":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
+				}
+				val = v
+			}
+			cfg["PRESENCE_PENALTY"] = val
+			provided["PRESENCE_PENALTY"] = true
+		case "-M", "--max_tokens":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
+				}
+				val = v
+			}
+			cfg["MAX_TOKENS"] = val
+			provided["MAX_TOKENS"] = true
+		case "-L", "--limit":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
+				}
+				val = v
+			}
+			cfg["HISTORY_LIMIT"] = val
+			provided["HISTORY_LIMIT"] = true
+		case "-s", "--sys_prompt_file":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
+				}
+				val = v
+			}
+			SYS_PROMPT_FILE = val
+			provided["SYS_PROMPT_FILE"] = true
+		case "-k", "--access_token":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
+				}
+				val = v
+			}
+			ACCESS_TOKEN = val
+		case "--reasoning":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
+				}
+				val = v
+			}
+			cfg["REASONING_EFFORT"] = val
+			provided["REASONING_EFFORT"] = true
+		case "--stop":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
+				}
+				val = v
+			}
+			cfg["STOP"] = val
+			provided["STOP"] = true
+		case "--prompt":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
+				}
+				val = v
+			}
+			PROMPT_MODE = val
+		case "--stream":
+			if val == "true" {
 				cfg["STREAM"] = "true"
-				provided["STREAM"] = true
-			case "--stream=false":
+			} else if val == "false" {
 				cfg["STREAM"] = "false"
-				provided["STREAM"] = true
-			case "--save-settings":
-				SAVE_SETTINGS = true
-			case "--list":
-				LIST_ONLY = true
-			case "--help":
-				printHelp(cfg)
-				return
-			case "--":
-				// stop parsing flags; remaining args are positional
-				i++
-				break parseLoop
-			default:
-				// If it's --flag=value form but unknown, error out
-				if strings.Contains(a, "=") {
-					fmt.Fprintf(os.Stderr, "Unknown option: %s\n", key)
-					printHelp(cfg)
-					os.Exit(1)
-				}
-				// unknown long flag without equals: error
-				fmt.Fprintf(os.Stderr, "Unknown option: %s\n", key)
-				printHelp(cfg)
+			} else {
+				fmt.Fprintf(os.Stderr, "%sInvalid value for --stream: %s. Use true or false.%s\n", red, val, normal)
 				os.Exit(1)
 			}
-			i++
-			continue
+			provided["STREAM"] = true
+
+		// boolean flags
+		case "-S":
+			PERSIST_SYSTEM = true
+		case "--no-stream":
+			cfg["STREAM"] = "false"
+			provided["STREAM"] = true
+		case "--save-settings":
+			SAVE_SETTINGS = true
+		case "-l", "--list":
+			LIST_ONLY = true
+		case "-h", "--help":
+			printHelp(cfg)
+			return
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown option: %s\n", a)
+			printHelp(cfg)
+			os.Exit(1)
 		}
-
-		// short options like -m value or -m=value, -h
-		if strings.HasPrefix(a, "-") {
-			// handle known single-letter flags
-			// also accept -h and -l etc.
-			if a == "-h" || a == "--help" {
-				printHelp(cfg)
-				return
-			}
-			// support -m=value
-			if strings.Contains(a, "=") {
-				kv := strings.SplitN(a, "=", 2)
-				key := kv[0]
-				val := kv[1]
-				switch key {
-				case "-m":
-					cfg["MODEL"] = val
-					provided["MODEL"] = true
-				case "-T":
-					cfg["TEMPERATURE"] = val
-					provided["TEMPERATURE"] = true
-				case "-P":
-					cfg["TOP_P"] = val
-					provided["TOP_P"] = true
-				case "-f":
-					cfg["FREQUENCY_PENALTY"] = val
-					provided["FREQUENCY_PENALTY"] = true
-				case "-r":
-					cfg["PRESENCE_PENALTY"] = val
-					provided["PRESENCE_PENALTY"] = true
-				case "-M":
-					cfg["MAX_TOKENS"] = val
-					provided["MAX_TOKENS"] = true
-				case "-L":
-					cfg["HISTORY_LIMIT"] = val
-					provided["HISTORY_LIMIT"] = true
-				case "-s":
-					SYS_PROMPT_FILE = val
-					provided["SYS_PROMPT_FILE"] = true
-				case "-k":
-					ACCESS_TOKEN = val
-				default:
-					fmt.Fprintf(os.Stderr, "Unknown option: %s\n", key)
-					printHelp(cfg)
-					os.Exit(1)
-				}
-				i++
-				continue
-			}
-
-			// known single-letter flags that require a next token
-			switch a {
-			case "-m":
-				v, err := nextArg(&i)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-					os.Exit(1)
-				}
-				cfg["MODEL"] = v
-				provided["MODEL"] = true
-			case "-T":
-				v, err := nextArg(&i)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-					os.Exit(1)
-				}
-				cfg["TEMPERATURE"] = v
-				provided["TEMPERATURE"] = true
-			case "-P":
-				v, err := nextArg(&i)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-					os.Exit(1)
-				}
-				cfg["TOP_P"] = v
-				provided["TOP_P"] = true
-			case "-f":
-				v, err := nextArg(&i)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-					os.Exit(1)
-				}
-				cfg["FREQUENCY_PENALTY"] = v
-				provided["FREQUENCY_PENALTY"] = true
-			case "-r":
-				v, err := nextArg(&i)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-					os.Exit(1)
-				}
-				cfg["PRESENCE_PENALTY"] = v
-				provided["PRESENCE_PENALTY"] = true
-			case "-M":
-				v, err := nextArg(&i)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-					os.Exit(1)
-				}
-				cfg["MAX_TOKENS"] = v
-				provided["MAX_TOKENS"] = true
-			case "-L":
-				v, err := nextArg(&i)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-					os.Exit(1)
-				}
-				cfg["HISTORY_LIMIT"] = v
-				provided["HISTORY_LIMIT"] = true
-			case "-s":
-				v, err := nextArg(&i)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-					os.Exit(1)
-				}
-				SYS_PROMPT_FILE = v
-				provided["SYS_PROMPT_FILE"] = true
-			case "-k":
-				v, err := nextArg(&i)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
-					os.Exit(1)
-				}
-				ACCESS_TOKEN = v
-			case "-l":
-				LIST_ONLY = true
-			default:
-				// unknown short option -> error
-				fmt.Fprintf(os.Stderr, "Unknown option: %s\n", a)
-				printHelp(cfg)
-				os.Exit(1)
-			}
-			i++
-			continue
-		}
-
-		// Positional argument -> remainder are positional (conversation file and beyond)
-		// stop parsing and treat rest as positional
-		args = args[i:]
-		break
+		i++
 	}
-	// after parsing, 'args' contains the leftover positional arguments
+	args := positionalArgs
 
 	// If list requested
 	if LIST_ONLY {
@@ -947,6 +916,28 @@ parseLoop:
 	if ACCESS_TOKEN == "" {
 		fmt.Fprintf(os.Stderr, "%sNo API key provided.%s Set NVIDIA_BUILD_AI_ACCESS_TOKEN or pass -k ACCESS_TOKEN\n", red, normal)
 		os.Exit(1)
+	}
+
+	// conversation file
+	convFile := ""
+	if len(args) > 0 {
+		convFile = args[0]
+		// expand ~
+		if strings.HasPrefix(convFile, "~") {
+			home := os.Getenv("HOME")
+			convFile = home + convFile[1:]
+		}
+	}
+
+	// read system prompt file
+	sysPromptContent := ""
+	if SYS_PROMPT_FILE != "" {
+		if _, err := os.Stat(SYS_PROMPT_FILE); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "%sSystem prompt file not found: %s%s\n", red, SYS_PROMPT_FILE, normal)
+			os.Exit(1)
+		}
+		b, _ := ioutil.ReadFile(SYS_PROMPT_FILE)
+		sysPromptContent = string(b)
 	}
 
 	// Non-interactive prompt mode
@@ -974,24 +965,44 @@ parseLoop:
 			promptText = PROMPT_MODE
 		}
 
-		err = processSinglePrompt(promptText, cfg, "", ACCESS_TOKEN)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", red, err, normal)
-			os.Exit(1)
+		if convFile != "" {
+			// Non-interactive with a conversation file
+			if err := ensureHistoryFileStructure(convFile, cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "%sFailed to setup conversation file: %v%s\n", red, err, normal)
+				os.Exit(1)
+			}
+			if err := applyFileSettingsAsDefaults(convFile, cfg, provided); err != nil {
+				fmt.Fprintf(os.Stderr, "%sWarning applying file settings: %v%s\n", red, err, normal)
+			}
+			if err := validateNumericRanges(cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+				os.Exit(1)
+			}
+			if SAVE_SETTINGS {
+				if err := persistSettingsToFile(convFile, cfg); err != nil {
+					fmt.Fprintf(os.Stderr, "%sFailed to persist settings: %v%s\n", red, err, normal)
+					os.Exit(1)
+				}
+				fmt.Fprintf(os.Stderr, "%sPersisted current settings into %s%s\n", green, convFile, normal)
+			}
+			err = processMessage(promptText, convFile, cfg, sysPromptContent, ACCESS_TOKEN)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%sError: %v%s\n", red, err, normal)
+				os.Exit(1)
+			}
+		} else {
+			// Non-interactive, no conversation file
+			err = processSinglePrompt(promptText, cfg, sysPromptContent, ACCESS_TOKEN)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%sError: %v%s\n", red, err, normal)
+				os.Exit(1)
+			}
 		}
 		return
 	}
 
-	// conversation file
-	convFile := ""
-	if len(args) > 0 {
-		convFile = args[0]
-		// expand ~
-		if strings.HasPrefix(convFile, "~") {
-			home := os.Getenv("HOME")
-			convFile = home + convFile[1:]
-		}
-	} else {
+	// Interactive mode
+	if convFile == "" {
 		// create new default path
 		hdir := os.Getenv("XDG_CACHE_HOME")
 		if hdir == "" {
@@ -1009,17 +1020,6 @@ parseLoop:
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "%sConversation file:%s %s\n", green, normal, convFile)
-
-	// read system prompt file
-	sysPromptContent := ""
-	if SYS_PROMPT_FILE != "" {
-		if _, err := os.Stat(SYS_PROMPT_FILE); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "%sSystem prompt file not found: %s%s\n", red, SYS_PROMPT_FILE, normal)
-			os.Exit(1)
-		}
-		b, _ := ioutil.ReadFile(SYS_PROMPT_FILE)
-		sysPromptContent = string(b)
-	}
 
 	// Apply persisted settings as defaults if user did not provide those options explicitly
 	if err := applyFileSettingsAsDefaults(convFile, cfg, provided); err != nil {
