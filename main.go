@@ -755,11 +755,15 @@ parseLoop:
 			case "--no-stream":
 				cfg["STREAM"] = "false"
 				provided["STREAM"] = true
-			case "--stream=true":
-				cfg["STREAM"] = "true"
-				provided["STREAM"] = true
-			case "--stream=false":
-				cfg["STREAM"] = "false"
+			case "--stream":
+				if val == "true" {
+					cfg["STREAM"] = "true"
+				} else if val == "false" {
+					cfg["STREAM"] = "false"
+				} else {
+					fmt.Fprintf(os.Stderr, "%sInvalid value for --stream: %s. Use true or false.%s\n", red, val, normal)
+					os.Exit(1)
+				}
 				provided["STREAM"] = true
 			case "--save-settings":
 				SAVE_SETTINGS = true
