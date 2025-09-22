@@ -949,6 +949,28 @@ parseLoop:
 		os.Exit(1)
 	}
 
+	// conversation file
+	convFile := ""
+	if len(args) > 0 {
+		convFile = args[0]
+		// expand ~
+		if strings.HasPrefix(convFile, "~") {
+			home := os.Getenv("HOME")
+			convFile = home + convFile[1:]
+		}
+	}
+
+	// read system prompt file
+	sysPromptContent := ""
+	if SYS_PROMPT_FILE != "" {
+		if _, err := os.Stat(SYS_PROMPT_FILE); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "%sSystem prompt file not found: %s%s\n", red, SYS_PROMPT_FILE, normal)
+			os.Exit(1)
+		}
+		b, _ := ioutil.ReadFile(SYS_PROMPT_FILE)
+		sysPromptContent = string(b)
+	}
+
 	// Non-interactive prompt mode
 	if PROMPT_MODE != "" {
 		var promptText string
@@ -974,24 +996,44 @@ parseLoop:
 			promptText = PROMPT_MODE
 		}
 
-		err = processSinglePrompt(promptText, cfg, "", ACCESS_TOKEN)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", red, err, normal)
-			os.Exit(1)
+		if convFile != "" {
+			// Non-interactive with a conversation file
+			if err := ensureHistoryFileStructure(convFile, cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "%sFailed to setup conversation file: %v%s\n", red, err, normal)
+				os.Exit(1)
+			}
+			if err := applyFileSettingsAsDefaults(convFile, cfg, provided); err != nil {
+				fmt.Fprintf(os.Stderr, "%sWarning applying file settings: %v%s\n", red, err, normal)
+			}
+			if err := validateNumericRanges(cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+				os.Exit(1)
+			}
+			if SAVE_SETTINGS {
+				if err := persistSettingsToFile(convFile, cfg); err != nil {
+					fmt.Fprintf(os.Stderr, "%sFailed to persist settings: %v%s\n", red, err, normal)
+					os.Exit(1)
+				}
+				fmt.Fprintf(os.Stderr, "%sPersisted current settings into %s%s\n", green, convFile, normal)
+			}
+			err = processMessage(promptText, convFile, cfg, sysPromptContent, ACCESS_TOKEN)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%sError: %v%s\n", red, err, normal)
+				os.Exit(1)
+			}
+		} else {
+			// Non-interactive, no conversation file
+			err = processSinglePrompt(promptText, cfg, sysPromptContent, ACCESS_TOKEN)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%sError: %v%s\n", red, err, normal)
+				os.Exit(1)
+			}
 		}
 		return
 	}
 
-	// conversation file
-	convFile := ""
-	if len(args) > 0 {
-		convFile = args[0]
-		// expand ~
-		if strings.HasPrefix(convFile, "~") {
-			home := os.Getenv("HOME")
-			convFile = home + convFile[1:]
-		}
-	} else {
+	// Interactive mode
+	if convFile == "" {
 		// create new default path
 		hdir := os.Getenv("XDG_CACHE_HOME")
 		if hdir == "" {
@@ -1009,17 +1051,6 @@ parseLoop:
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "%sConversation file:%s %s\n", green, normal, convFile)
-
-	// read system prompt file
-	sysPromptContent := ""
-	if SYS_PROMPT_FILE != "" {
-		if _, err := os.Stat(SYS_PROMPT_FILE); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "%sSystem prompt file not found: %s%s\n", red, SYS_PROMPT_FILE, normal)
-			os.Exit(1)
-		}
-		b, _ := ioutil.ReadFile(SYS_PROMPT_FILE)
-		sysPromptContent = string(b)
-	}
 
 	// Apply persisted settings as defaults if user did not provide those options explicitly
 	if err := applyFileSettingsAsDefaults(convFile, cfg, provided); err != nil {
