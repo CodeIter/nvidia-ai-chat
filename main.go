@@ -109,9 +109,23 @@ Options:
   --stream=true|false     explicitly enable/disable streaming
   --reasoning EFFORT      reasoning effort: low | medium | high (default: %s)
   --stop STRING           stop string (empty = omitted)
+  --prompt=text|file|-    non-interactive mode: print AI response for given prompt and exit
   -k ACCESS_TOKEN         provide API key (overrides env)
   -l, --list              list supported models (built-in subset) and exit
   -h, --help              show this help
+
+Interactive commands (enter on a new line):
+  /exit, /quit            exit the program
+  /history                print full conversation JSON
+  /clear                  clear conversation messages
+  /save <file>            save conversation to a new file
+  /persist-system         prompts for a file path to persist as the system prompt
+  /model <model_name>     switch model for this session
+  /temperature <0..1>     set temperature for this session
+  /top_p <0.01..1>        set top_p for this session
+  /max_tokens <1..4096>   set max_tokens for this session
+  /stop <string>          set stop string for this session
+  /persist-settings       save the current session's settings to the conversation file
 
 Parameter explanations:
   Reasoning Effort : Controls the effort level for reasoning in reasoning-capable models.
@@ -681,6 +695,7 @@ func main() {
 	PERSIST_SYSTEM := false
 	SAVE_SETTINGS := false
 	LIST_ONLY := false
+	PROMPT_MODE := "" // for --prompt
 
 	// helper to get next argument (used when flag and its value are separate tokens)
 	nextArg := func(i *int) (string, error) {
@@ -727,6 +742,16 @@ parseLoop:
 				}
 				cfg["STOP"] = val
 				provided["STOP"] = true
+			case "--prompt":
+				if val == "" {
+					v, err := nextArg(&i)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+						os.Exit(1)
+					}
+					val = v
+				}
+				PROMPT_MODE = val
 			case "--no-stream":
 				cfg["STREAM"] = "false"
 				provided["STREAM"] = true
@@ -915,6 +940,48 @@ parseLoop:
 		return
 	}
 
+	// API key selection from env if not provided
+	if ACCESS_TOKEN == "" {
+		ACCESS_TOKEN = getAPIKeyFromEnv()
+	}
+	if ACCESS_TOKEN == "" {
+		fmt.Fprintf(os.Stderr, "%sNo API key provided.%s Set NVIDIA_BUILD_AI_ACCESS_TOKEN or pass -k ACCESS_TOKEN\n", red, normal)
+		os.Exit(1)
+	}
+
+	// Non-interactive prompt mode
+	if PROMPT_MODE != "" {
+		var promptText string
+		var err error
+		if PROMPT_MODE == "-" {
+			// from stdin
+			b, e := ioutil.ReadAll(os.Stdin)
+			if e != nil {
+				fmt.Fprintf(os.Stderr, "%sFailed to read from stdin: %v%s\n", red, e, normal)
+				os.Exit(1)
+			}
+			promptText = string(b)
+		} else if fileExists(PROMPT_MODE) {
+			// from file
+			b, e := ioutil.ReadFile(PROMPT_MODE)
+			if e != nil {
+				fmt.Fprintf(os.Stderr, "%sFailed to read prompt file: %v%s\n", red, e, normal)
+				os.Exit(1)
+			}
+			promptText = string(b)
+		} else {
+			// as-is
+			promptText = PROMPT_MODE
+		}
+
+		err = processSinglePrompt(promptText, cfg, "", ACCESS_TOKEN)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", red, err, normal)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// conversation file
 	convFile := ""
 	if len(args) > 0 {
@@ -933,7 +1000,7 @@ parseLoop:
 		cfg["HISTORY_DIR"] = filepath.Join(hdir, "nvidia-chat")
 		ts := time.Now().Format("20060102-150405")
 		convFile = filepath.Join(cfg["HISTORY_DIR"], "conversation-"+ts+".json")
-		fmt.Printf("Creating conversation file: %s\n", convFile)
+		fmt.Fprintf(os.Stderr, "Creating conversation file: %s\n", convFile)
 	}
 
 	// ensure conversation file exists and has structure
@@ -941,7 +1008,7 @@ parseLoop:
 		fmt.Fprintf(os.Stderr, "%sFailed to setup conversation file: %v%s\n", red, err, normal)
 		os.Exit(1)
 	}
-	fmt.Printf("%sConversation file:%s %s\n", green, normal, convFile)
+	fmt.Fprintf(os.Stderr, "%sConversation file:%s %s\n", green, normal, convFile)
 
 	// read system prompt file
 	sysPromptContent := ""
@@ -952,15 +1019,6 @@ parseLoop:
 		}
 		b, _ := ioutil.ReadFile(SYS_PROMPT_FILE)
 		sysPromptContent = string(b)
-	}
-
-	// API key selection from env if not provided
-	if ACCESS_TOKEN == "" {
-		ACCESS_TOKEN = getAPIKeyFromEnv()
-	}
-	if ACCESS_TOKEN == "" {
-		fmt.Fprintf(os.Stderr, "%sNo API key provided.%s Set NVIDIA_BUILD_AI_ACCESS_TOKEN or pass -k ACCESS_TOKEN\n", red, normal)
-		os.Exit(1)
 	}
 
 	// Apply persisted settings as defaults if user did not provide those options explicitly
@@ -993,7 +1051,7 @@ parseLoop:
 		os.Exit(1)
 	}
 	if count >= limit {
-		fmt.Printf("%sConversation message limit reached.%s\nFile: %s\nMessages in file: %d\nConfigured limit: %d\n\nThis program will NOT remove or rotate messages automatically.\nOptions:\n  - Increase limit via -L option and re-run\n  - Use a different conversation file (pass new filename)\n  - Manually edit the file to remove old messages\n\nExiting.\n", red, normal, convFile, count, limit)
+		fmt.Fprintf(os.Stderr, "%sConversation message limit reached.%s\nFile: %s\nMessages in file: %d\nConfigured limit: %d\n\nThis program will NOT remove or rotate messages automatically.\nOptions:\n  - Increase limit via -L option and re-run\n  - Use a different conversation file (pass new filename)\n  - Manually edit the file to remove old messages\n\nExiting.\n", red, normal, convFile, count, limit)
 		os.Exit(1)
 	}
 
@@ -1003,34 +1061,34 @@ parseLoop:
 			fmt.Fprintf(os.Stderr, "%sFailed to persist settings: %v%s\n", red, err, normal)
 			os.Exit(1)
 		}
-		fmt.Printf("%sPersisted current settings into conversation file's .settings%s\n", green, normal)
+		fmt.Fprintf(os.Stderr, "%sPersisted current settings into conversation file's .settings%s\n", green, normal)
 	}
 	if PERSIST_SYSTEM {
 		if err := persistSystemToFile(convFile, sysPromptContent); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to persist system prompt: %v%s\n", red, err, normal)
 			os.Exit(1)
 		}
-		fmt.Printf("%sPersisted system prompt into conversation file's .system%s\n", green, normal)
+		fmt.Fprintf(os.Stderr, "%sPersisted system prompt into conversation file's .system%s\n", green, normal)
 	}
 
 	// Interactive banner
-	fmt.Println()
-	fmt.Println(`AI models generate responses and outputs based on complex algorithms and
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintln(os.Stderr, `AI models generate responses and outputs based on complex algorithms and
 machine learning techniques, and those responses or outputs may be
 inaccurate, harmful, biased or indecent. By testing this model, you assume
 the risk of any harm caused by any response or output of the model. Please
 do not upload any confidential information or personal data unless
 expressly permitted. Your use is logged for security purposes.
 `)
-	fmt.Printf("%sNVIDIA chat (go)%s model=%s temperature=%s top_p=%s max_tokens=%s stream=%s\n", bold, normal, cfg["MODEL"], cfg["TEMPERATURE"], cfg["TOP_P"], cfg["MAX_TOKENS"], cfg["STREAM"])
-	fmt.Printf("Conversation file: %s\n", convFile)
-	fmt.Println("Type your message and end it by Ctrl+D. Commands: /exit /quit /history /clear /save <file> /persist-system (see help)")
+	fmt.Fprintf(os.Stderr, "%sNVIDIA chat (go)%s model=%s temperature=%s top_p=%s max_tokens=%s stream=%s\n", bold, normal, cfg["MODEL"], cfg["TEMPERATURE"], cfg["TOP_P"], cfg["MAX_TOKENS"], cfg["STREAM"])
+	fmt.Fprintf(os.Stderr, "Conversation file: %s\n", convFile)
+	fmt.Fprintln(os.Stderr, "Type your message and end it by Ctrl+D. Commands: /exit /quit /history /clear /save <file> /persist-system (see help)")
 
 	// trap SIGINT handled by default (Ctrl+C ends program)
 
 	// interactive loop
 	for {
-		fmt.Printf("\n%s: ", blue+"You"+normal)
+		fmt.Fprintf(os.Stderr, "\n%s: ", blue+"You"+normal)
 
 		// open /dev/tty for per-iteration multi-line input terminated by Ctrl+D
 		tty, err := openTTY()
@@ -1048,7 +1106,7 @@ expressly permitted. Your use is logged for security purposes.
 				return
 			}
 			// handle commands and requests below
-			if handleInteractiveInput(userInput, convFile) {
+			if handleInteractiveInput(userInput, convFile, cfg) {
 				// if it returned true, continue loop
 				continue
 			}
@@ -1073,7 +1131,7 @@ expressly permitted. Your use is logged for security purposes.
 			return
 		}
 		// handle commands
-		if handled := handleInteractiveInput(userInput, convFile); handled {
+		if handled := handleInteractiveInput(userInput, convFile, cfg); handled {
 			continue
 		}
 		// append user message
@@ -1176,18 +1234,22 @@ expressly permitted. Your use is logged for security purposes.
 // Returns true if the command was a special/handled interactive command
 // handleInteractiveInput returns true if the input was a special command that was handled here.
 // Otherwise returns false so the caller will continue normal message processing.
-func handleInteractiveInput(userInput, convFile string) bool {
+func handleInteractiveInput(userInput, convFile string, cfg map[string]string) bool {
 	trimmed := strings.TrimSpace(userInput)
+	parts := strings.Fields(trimmed)
+	if len(parts) == 0 {
+		return false
+	}
+	command := parts[0]
 
-	switch {
-	case trimmed == "/exit" || trimmed == "/quit":
-		fmt.Println("Bye.")
+	switch command {
+	case "/exit", "/quit":
+		fmt.Fprintln(os.Stderr, "Bye.")
 		os.Exit(0)
-		// unreachable, but satisfy the compiler:
 		return true
 
-	case trimmed == "/history":
-		fmt.Printf("%s:\n", convFile)
+	case "/history":
+		fmt.Fprintf(os.Stderr, "%s:\n", convFile)
 		b, err := ioutil.ReadFile(convFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed reading conversation: %v%s\n", red, err, normal)
@@ -1196,7 +1258,7 @@ func handleInteractiveInput(userInput, convFile string) bool {
 		fmt.Println(string(b))
 		return true
 
-	case trimmed == "/clear":
+	case "/clear":
 		cf, err := readConversation(convFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed reading conversation: %v%s\n", red, err, normal)
@@ -1206,26 +1268,25 @@ func handleInteractiveInput(userInput, convFile string) bool {
 		if err := writeConversation(convFile, cf); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed clearing messages: %v%s\n", red, err, normal)
 		} else {
-			fmt.Printf("%sMessages cleared%s\n", green, normal)
+			fmt.Fprintf(os.Stderr, "%sMessages cleared%s\n", green, normal)
 		}
 		return true
 
-	case strings.HasPrefix(trimmed, "/save"):
-		parts := strings.Fields(userInput)
+	case "/save":
 		if len(parts) < 2 {
-			fmt.Println("Usage: /save path")
+			fmt.Fprintln(os.Stderr, "Usage: /save path")
 			return true
 		}
 		target := parts[1]
 		if err := copyFile(convFile, target); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to save: %v%s\n", red, err, normal)
 		} else {
-			fmt.Printf("Saved to %s\n", target)
+			fmt.Fprintf(os.Stderr, "Saved to %s\n", target)
 		}
 		return true
 
-	case strings.HasPrefix(trimmed, "/persist-system"):
-		fmt.Print("Path to system prompt file to persist: ")
+	case "/persist-system":
+		fmt.Fprint(os.Stderr, "Path to system prompt file to persist: ")
 		tty, err := openTTY()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%sNo TTY available to read path%s\n", red, normal)
@@ -1235,14 +1296,47 @@ func handleInteractiveInput(userInput, convFile string) bool {
 		tty.Close()
 		path := strings.TrimSpace(string(b))
 		if path == "" || !fileExists(path) {
-			fmt.Printf("%sFile not found%s\n", red, normal)
+			fmt.Fprintf(os.Stderr, "%sFile not found%s\n", red, normal)
 			return true
 		}
 		content, _ := ioutil.ReadFile(path)
 		if err := persistSystemToFile(convFile, string(content)); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to persist system prompt: %v%s\n", red, err, normal)
 		} else {
-			fmt.Printf("%sPersisted system prompt into conversation file's .system%s\n", green, normal)
+			fmt.Fprintf(os.Stderr, "%sPersisted system prompt into conversation file's .system%s\n", green, normal)
+		}
+		return true
+
+	case "/model", "/temperature", "/top_p", "/frequency_penalty", "/presence_penalty", "/max_tokens", "/reasoning", "/stop":
+		if len(parts) < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: %s <value>\n", command)
+			return true
+		}
+		val := parts[1]
+		key := strings.TrimPrefix(command, "/")
+		key = strings.ToUpper(key)
+		if key == "REASONING" {
+			key = "REASONING_EFFORT"
+		}
+		// quick validation
+		tempCfg := make(map[string]string)
+		for k, v := range cfg {
+			tempCfg[k] = v
+		}
+		tempCfg[key] = val
+		if err := validateNumericRanges(tempCfg); err != nil {
+			fmt.Fprintf(os.Stderr, "%sInvalid value: %v%s\n", red, err, normal)
+			return true
+		}
+		cfg[key] = val
+		fmt.Fprintf(os.Stderr, "%s%s set to %s%s\n", green, key, val, normal)
+		return true
+
+	case "/persist-settings":
+		if err := persistSettingsToFile(convFile, cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "%sFailed to persist settings: %v%s\n", red, err, normal)
+		} else {
+			fmt.Fprintf(os.Stderr, "%sPersisted current settings to %s%s\n", green, convFile, normal)
 		}
 		return true
 
@@ -1272,4 +1366,106 @@ func copyFile(src, dst string) error {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// Quieter stream handler for --prompt mode
+func handleStreamQuiet(respBody io.Reader) error {
+	scanner := bufio.NewScanner(respBody)
+	const maxCapacity = 1024 * 1024
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, maxCapacity)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			line = strings.TrimPrefix(line, "data: ")
+		}
+		line = strings.TrimSpace(line)
+		if line == "" || line == "[DONE]" {
+			continue
+		}
+		var chunk StreamChunk
+		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Choices) > 0 {
+			choice := chunk.Choices[0]
+			var content string
+			if choice.Delta != nil && choice.Delta.Content != nil {
+				content = *choice.Delta.Content
+			} else if msg := choice.Message; msg != nil {
+				if v, ok := msg["content"].(string); ok {
+					content = v
+				}
+			}
+			if content != "" {
+				fmt.Print(content)
+			}
+		}
+	}
+	return scanner.Err()
+}
+
+// Quieter non-stream handler for --prompt mode
+func handleNonStreamQuiet(body []byte) error {
+	var j map[string]interface{}
+	if err := json.Unmarshal(body, &j); err != nil {
+		fmt.Print(string(body)) // fallback to printing raw body
+		return err
+	}
+	var content string
+	if choices, ok := j["choices"].([]interface{}); ok && len(choices) > 0 {
+		if first, ok := choices[0].(map[string]interface{}); ok {
+			if msg, ok := first["message"].(map[string]interface{}); ok {
+				if c, ok := msg["content"].(string); ok {
+					content = c
+				}
+			}
+		}
+	}
+
+	if content != "" {
+		fmt.Print(content)
+	} else {
+		fmt.Print(string(body)) // fallback
+	}
+	return nil
+}
+
+// processSinglePrompt is for non-interactive mode. It sends a single prompt and prints the response.
+func processSinglePrompt(userInput string, cfg map[string]string, sysPromptContent, accessToken string) error {
+	var messages []Message
+	if sysPromptContent != "" {
+		messages = append(messages, Message{Role: "system", Content: sysPromptContent})
+	}
+	messages = append(messages, Message{Role: "user", Content: userInput})
+
+	payloadBytes, err := buildPayload(cfg, messages)
+	if err != nil {
+		return fmt.Errorf("build payload: %w", err)
+	}
+
+	url := cfg["BASE_URL"] + "/chat/completions"
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(payloadBytes))
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 0}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		body, _ := ioutil.ReadAll(resp.Body)
+		return fmt.Errorf("api error: %s\n%s", resp.Status, string(body))
+	}
+
+	if cfg["STREAM"] == "true" {
+		return handleStreamQuiet(resp.Body)
+	} else {
+		body, _ := ioutil.ReadAll(resp.Body)
+		return handleNonStreamQuiet(body)
+	}
 }
