@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -128,6 +129,9 @@ Interactive commands (enter on a new line):
   /max_tokens <1..4096>   set max_tokens for this session
   /stop <string>          set stop string for this session
   /persist-settings       save the current session's settings to the conversation file
+  /exportlast [-t] <file> export last AI response to a markdown file. (-t: filter thinking)
+  /exportlastn [-t] <n> <file> export last n AI responses to a markdown file. (-t: filter thinking)
+  /exportn [-t] <n> <file> export the Nth-to-last AI response to a markdown file. (-t: filter thinking)
 
 Parameter explanations:
   Reasoning Effort : Controls the effort level for reasoning in reasoning-capable models.
@@ -1241,7 +1245,12 @@ expressly permitted. Your use is logged for security purposes.
 // Returns true if the command was a special/handled interactive command
 // handleInteractiveInput returns true if the input was a special command that was handled here.
 // Otherwise returns false so the caller will continue normal message processing.
-func exportLastN(n int, convFile, targetFile string) error {
+func filterThinkingBlock(content string) string {
+	re := regexp.MustCompile(`(?s)\[Begin of Assistant Reasoning\].*?\[/End of Assistant Reasoning\]\s*\n?`)
+	return re.ReplaceAllString(content, "")
+}
+
+func exportLastN(n int, convFile, targetFile string, filterThinking bool) error {
 	cf, err := readConversation(convFile)
 	if err != nil {
 		return fmt.Errorf("reading conversation file: %w", err)
@@ -1266,11 +1275,17 @@ func exportLastN(n int, convFile, targetFile string) error {
 		aiResponses[i], aiResponses[j] = aiResponses[j], aiResponses[i]
 	}
 
+	if filterThinking {
+		for i, resp := range aiResponses {
+			aiResponses[i] = filterThinkingBlock(resp)
+		}
+	}
+
 	content := strings.Join(aiResponses, "\n\n---\n\n")
 	return ioutil.WriteFile(targetFile, []byte(content), 0o644)
 }
 
-func exportNth(n int, convFile, targetFile string) error {
+func exportNth(n int, convFile, targetFile string, filterThinking bool) error {
 	cf, err := readConversation(convFile)
 	if err != nil {
 		return fmt.Errorf("reading conversation file: %w", err)
@@ -1294,7 +1309,24 @@ func exportNth(n int, convFile, targetFile string) error {
 	}
 
 	content := aiResponses[index]
+	if filterThinking {
+		content = filterThinkingBlock(content)
+	}
 	return ioutil.WriteFile(targetFile, []byte(content), 0o644)
+}
+
+func parseTFlag(parts []string) (bool, []string) {
+	filterThinking := false
+	var newParts []string
+	newParts = append(newParts, parts[0])
+	for _, p := range parts[1:] {
+		if p == "-t" {
+			filterThinking = true
+		} else {
+			newParts = append(newParts, p)
+		}
+	}
+	return filterThinking, newParts
 }
 
 func handleInteractiveInput(userInput, convFile string, cfg map[string]string) bool {
@@ -1406,20 +1438,24 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 		}
 		return true
 	case "/exportlast":
+		filterThinking, newParts := parseTFlag(parts)
+		parts = newParts
 		if len(parts) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: /exportlast <file>")
+			fmt.Fprintln(os.Stderr, "Usage: /exportlast [-t] <file>")
 			return true
 		}
 		targetFile := parts[1]
-		if err := exportLastN(1, convFile, targetFile); err != nil {
+		if err := exportLastN(1, convFile, targetFile, filterThinking); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to export: %v%s\n", red, err, normal)
 		} else {
 			fmt.Fprintf(os.Stderr, "%sExported last response to %s%s\n", green, targetFile, normal)
 		}
 		return true
 	case "/exportn":
+		filterThinking, newParts := parseTFlag(parts)
+		parts = newParts
 		if len(parts) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: /exportn <n> <file>")
+			fmt.Fprintln(os.Stderr, "Usage: /exportn [-t] <n> <file>")
 			return true
 		}
 		n, err := strconv.Atoi(parts[1])
@@ -1428,15 +1464,17 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 			return true
 		}
 		targetFile := parts[2]
-		if err := exportNth(n, convFile, targetFile); err != nil {
+		if err := exportNth(n, convFile, targetFile, filterThinking); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to export: %v%s\n", red, err, normal)
 		} else {
 			fmt.Fprintf(os.Stderr, "%sExported %d(th) last response to %s%s\n", green, n, targetFile, normal)
 		}
 		return true
 	case "/exportlastn":
+		filterThinking, newParts := parseTFlag(parts)
+		parts = newParts
 		if len(parts) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: /exportlastn <n> <file>")
+			fmt.Fprintln(os.Stderr, "Usage: /exportlastn [-t] <n> <file>")
 			return true
 		}
 		n, err := strconv.Atoi(parts[1])
@@ -1445,7 +1483,7 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 			return true
 		}
 		targetFile := parts[2]
-		if err := exportLastN(n, convFile, targetFile); err != nil {
+		if err := exportLastN(n, convFile, targetFile, filterThinking); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to export: %v%s\n", red, err, normal)
 		} else {
 			fmt.Fprintf(os.Stderr, "%sExported last %d responses to %s%s\n", green, n, targetFile, normal)
@@ -1471,9 +1509,9 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 		fmt.Fprintln(os.Stderr, "  /limit <number>: Set history limit for this session")
 		fmt.Fprintln(os.Stderr, "  /stream <true|false>: Enable/disable streaming for this session")
 		fmt.Fprintln(os.Stderr, "  /persist-settings: Save the current session's settings to the conversation file")
-		fmt.Fprintln(os.Stderr, "  /exportlast <file>: Export last AI response to a markdown file")
-		fmt.Fprintln(os.Stderr, "  /exportlastn <n> <file>: Export last n AI responses to a markdown file")
-		fmt.Fprintln(os.Stderr, "  /exportn <n> <file>: Export the Nth-to-last AI response to a markdown file")
+		fmt.Fprintln(os.Stderr, "  /exportlast [-t] <file>: Export last AI response to a markdown file. (-t: filter thinking)")
+		fmt.Fprintln(os.Stderr, "  /exportlastn [-t] <n> <file>: Export last n AI responses to a markdown file. (-t: filter thinking)")
+		fmt.Fprintln(os.Stderr, "  /exportn [-t] <n> <file>: Export the Nth-to-last AI response to a markdown file. (-t: filter thinking)")
 		fmt.Fprintln(os.Stderr, "  /randomodel: Switch to a random model")
 		fmt.Fprintln(os.Stderr, "  /help: Show this help message")
 		return true
