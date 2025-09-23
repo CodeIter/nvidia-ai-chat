@@ -1270,6 +1270,33 @@ func exportLastN(n int, convFile, targetFile string) error {
 	return ioutil.WriteFile(targetFile, []byte(content), 0o644)
 }
 
+func exportNth(n int, convFile, targetFile string) error {
+	cf, err := readConversation(convFile)
+	if err != nil {
+		return fmt.Errorf("reading conversation file: %w", err)
+	}
+
+	var aiResponses []string
+	for _, msg := range cf.Messages {
+		if msg.Role == "assistant" {
+			aiResponses = append(aiResponses, msg.Content)
+		}
+	}
+
+	if len(aiResponses) == 0 {
+		return fmt.Errorf("no assistant responses found")
+	}
+
+	// n is 1-based from the end
+	index := len(aiResponses) - n
+	if index < 0 || index >= len(aiResponses) {
+		return fmt.Errorf("index out of bounds: specified %d, but there are only %d assistant responses", n, len(aiResponses))
+	}
+
+	content := aiResponses[index]
+	return ioutil.WriteFile(targetFile, []byte(content), 0o644)
+}
+
 func handleInteractiveInput(userInput, convFile string, cfg map[string]string) bool {
 	trimmed := strings.TrimSpace(userInput)
 	parts := strings.Fields(trimmed)
@@ -1401,6 +1428,23 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 			return true
 		}
 		targetFile := parts[2]
+		if err := exportNth(n, convFile, targetFile); err != nil {
+			fmt.Fprintf(os.Stderr, "%sFailed to export: %v%s\n", red, err, normal)
+		} else {
+			fmt.Fprintf(os.Stderr, "%sExported %d(th) last response to %s%s\n", green, n, targetFile, normal)
+		}
+		return true
+	case "/exportlastn":
+		if len(parts) < 3 {
+			fmt.Fprintln(os.Stderr, "Usage: /exportlastn <n> <file>")
+			return true
+		}
+		n, err := strconv.Atoi(parts[1])
+		if err != nil || n <= 0 {
+			fmt.Fprintf(os.Stderr, "%sInvalid number: %s%s\n", red, parts[1], normal)
+			return true
+		}
+		targetFile := parts[2]
 		if err := exportLastN(n, convFile, targetFile); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to export: %v%s\n", red, err, normal)
 		} else {
@@ -1428,7 +1472,8 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 		fmt.Fprintln(os.Stderr, "  /stream <true|false>: Enable/disable streaming for this session")
 		fmt.Fprintln(os.Stderr, "  /persist-settings: Save the current session's settings to the conversation file")
 		fmt.Fprintln(os.Stderr, "  /exportlast <file>: Export last AI response to a markdown file")
-		fmt.Fprintln(os.Stderr, "  /exportn <n> <file>: Export last n AI responses to a markdown file")
+		fmt.Fprintln(os.Stderr, "  /exportlastn <n> <file>: Export last n AI responses to a markdown file")
+		fmt.Fprintln(os.Stderr, "  /exportn <n> <file>: Export the Nth-to-last AI response to a markdown file")
 		fmt.Fprintln(os.Stderr, "  /randomodel: Switch to a random model")
 		fmt.Fprintln(os.Stderr, "  /help: Show this help message")
 		return true
