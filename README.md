@@ -57,6 +57,10 @@ In interactive mode, you can use the following commands:
 - `/persist-system <file>`: Persist a system prompt from a file.
 - `/model <model_name>`: Switch the model for the current session.
 - `/temperature <0..1>`: Set the temperature for the current session.
+- `/exportlast [-t] <file>`: Export the last AI response to a file.
+- `/exportlastn [-t] <n> <file>`: Export the last `n` AI responses to a file.
+- `/exportn [-t] <n> <file>`: Export the Nth-to-last AI response to a file.
+The optional `-t` flag filters out the AI's "thinking" block from the exported content.
 - `/help`: Show the help message.
 
 ### Non-Interactive Mode
