@@ -30,7 +30,7 @@ The tool requires an NVIDIA AI access token. You can provide it in one of two wa
    ```bash
    export NVIDIA_BUILD_AI_ACCESS_TOKEN="your_token_here"
    ```
-2. Use the `-k` or `--access_token` flag:
+2. Use the `-k` or `--access-token` flag:
    ```bash
    ./nvidia-ai-chat -k "your_token_here"
    ```

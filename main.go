@@ -764,7 +764,7 @@ func main() {
 			}
 			cfg["TEMPERATURE"] = val
 			provided["TEMPERATURE"] = true
-		case "-P", "--top_p":
+		case "-P", "--top-p":
 			if val == "" {
 				v, err := nextArg(&i)
 				if err != nil {
@@ -775,7 +775,7 @@ func main() {
 			}
 			cfg["TOP_P"] = val
 			provided["TOP_P"] = true
-		case "-f", "--frequency_penalty":
+		case "-f", "--frequency-penalty":
 			if val == "" {
 				v, err := nextArg(&i)
 				if err != nil {
@@ -786,7 +786,7 @@ func main() {
 			}
 			cfg["FREQUENCY_PENALTY"] = val
 			provided["FREQUENCY_PENALTY"] = true
-		case "-r", "--presence_penalty":
+		case "-r", "--presence-penalty":
 			if val == "" {
 				v, err := nextArg(&i)
 				if err != nil {
@@ -797,7 +797,7 @@ func main() {
 			}
 			cfg["PRESENCE_PENALTY"] = val
 			provided["PRESENCE_PENALTY"] = true
-		case "-M", "--max_tokens":
+		case "-M", "--max-tokens":
 			if val == "" {
 				v, err := nextArg(&i)
 				if err != nil {
@@ -819,7 +819,7 @@ func main() {
 			}
 			cfg["HISTORY_LIMIT"] = val
 			provided["HISTORY_LIMIT"] = true
-		case "-s", "--sys_prompt_file":
+		case "-s", "--sys-prompt-file":
 			if val == "" {
 				v, err := nextArg(&i)
 				if err != nil {
@@ -830,7 +830,7 @@ func main() {
 			}
 			SYS_PROMPT_FILE = val
 			provided["SYS_PROMPT_FILE"] = true
-		case "-k", "--access_token":
+		case "-k", "--access-token":
 			if val == "" {
 				v, err := nextArg(&i)
 				if err != nil {
