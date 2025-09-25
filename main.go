@@ -677,6 +677,41 @@ func openTTY() (*os.File, error) {
 	return os.Open("/dev/tty")
 }
 
+// readLines reads input from stdin.
+// numLines: number of lines to read (default 1)
+// delim: line delimiter (default "\r\n")
+// returnWithoutDelim: if true, lines won't include delimiter
+func readLines(numLines int, delim string, returnWithoutDelim bool) ([]string, error) {
+	if numLines < 1 {
+		numLines = 1
+	}
+	if delim == "" {
+		delim = "\r\n"
+	}
+
+	reader := bufio.NewReader(os.Stdin)
+	lines := make([]string, 0, numLines)
+
+	for i := 0; i < numLines; i++ {
+		line, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return lines, err
+		}
+
+		if returnWithoutDelim {
+			line = strings.TrimSuffix(line, "\n")
+			line = strings.TrimSuffix(line, "\r")
+		}
+		lines = append(lines, line)
+
+		if err == io.EOF {
+			break
+		}
+	}
+
+	return lines, nil
+}
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	// Default cfg map
