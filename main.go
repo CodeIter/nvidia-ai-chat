@@ -41,10 +41,17 @@ var (
 		"nvidia-nemotron-nano-9b-v2",
 		"llama-3.3-nemotron-super-49b-v1.5",
 		"mistral-nemotron",
+		"mistral-small-24b-instruct",
 		"deepseek-v3.1",
 		"deepseek-r1-distill-qwen-32b",
 		"deepseek-r1-distill-llama-8b",
 		"deepseek-r1-0528",
+		"qwen3-next-80b-a3b-instruct",
+		"qwen3-next-80b-a3b-thinking",
+		"kimi-k2-instruct-0905",
+		"codegemma-7b",
+		"gemma-7b",
+		"mixtral-8x22b-instruct-v0.1",
 	}
 	apiEnvNames = []string{"NVIDIA_BUILD_AI_ACCESS_TOKEN", "NVIDIA_ACCESS_TOKEN", "ACCESS_TOKEN", "NVIDIA_API_KEY", "API_KEY"}
 )
@@ -494,8 +501,8 @@ func handleStream(respBody io.Reader, convFile string) (string, error) {
 		}
 		if content != "" {
 			if inReasoning {
-				fmt.Printf("\n%s\n", green+"[/End of Assistant Reasoning]"+normal)
-				assistantTextBuf.WriteString("\n[/End of Assistant Reasoning]\n")
+				fmt.Printf("\n%s\n\n", green+"[/End of Assistant Reasoning]"+normal)
+				assistantTextBuf.WriteString("\n[/End of Assistant Reasoning]\n\n")
 				inReasoning = false
 			}
 			fmt.Print(content)
@@ -504,8 +511,8 @@ func handleStream(respBody io.Reader, convFile string) (string, error) {
 	}
 
 	if inReasoning {
-		fmt.Printf("\n%s\n", green+"[/End of Assistant Reasoning]"+normal)
-		assistantTextBuf.WriteString("\n[/End of Assistant Reasoning]\n")
+		fmt.Printf("\n%s\n\n", green+"[/End of Assistant Reasoning]"+normal)
+		assistantTextBuf.WriteString("\n[/End of Assistant Reasoning]\n\n")
 		inReasoning = false
 	}
 
@@ -554,10 +561,10 @@ func handleNonStream(body []byte) (string, error) {
 	if reasoning != "" {
 		fmt.Printf("\n%s\n", green+"[Begin of Assistant Reasoning]"+normal)
 		fmt.Print(reasoning)
-		fmt.Printf("\n%s\n", green+"[/End of Assistant Reasoning]"+normal)
-		outBuf.WriteString("[Begin of Assistant Reasoning]")
+		fmt.Printf("\n%s\n\n", green+"[/End of Assistant Reasoning]"+normal)
+		outBuf.WriteString("[Begin of Assistant Reasoning]\n")
 		outBuf.WriteString(reasoning)
-		outBuf.WriteString("[End of Assistant Reasoning]")
+		outBuf.WriteString("\n[End of Assistant Reasoning]\n\n")
 	}
 	if content != "" {
 		fmt.Print(content)
@@ -672,41 +679,69 @@ func getAPIKeyFromEnv() string {
 	return ""
 }
 
-func openTTY() (*os.File, error) {
-	// Opens /dev/tty to read user input per loop iteration (so reading until Ctrl+D doesn't break loops)
-	return os.Open("/dev/tty")
+func readSingleLine(reader io.Reader, delimiters []string, trimDelimiter bool) (string, error) {
+	if reader == nil {
+		reader = os.Stdin
+	}
+	if len(delimiters) == 0 {
+		delimiters = []string{"\r\n", "\r", "\n"}
+	}
+	br := bufio.NewReader(reader)
+	var line bytes.Buffer
+	for {
+		b, err := br.ReadByte()
+		if err != nil {
+			if err == io.EOF {
+				// If no data was read, propagate EOF
+				if line.Len() == 0 {
+					return "", io.EOF
+				}
+				// Return last partial line along with EOF
+				return line.String(), io.EOF
+			}
+			return "", err
+		}
+		line.WriteByte(b)
+		for _, delim := range delimiters {
+			delimBytes := []byte(delim)
+			if bytes.HasSuffix(line.Bytes(), delimBytes) {
+				resultBytes := line.Bytes()
+				if trimDelimiter {
+					resultBytes = bytes.TrimSuffix(resultBytes, delimBytes)
+				}
+				return string(resultBytes), nil
+			}
+		}
+	}
 }
 
-// readLines reads input from stdin.
-// numLines: number of lines to read (default 1)
-// delim: line delimiter (default "\r\n")
-// returnWithoutDelim: if true, lines won't include delimiter
-func readLines(numLines int, delim string, returnWithoutDelim bool) ([]string, error) {
-	if numLines < 1 {
-		numLines = 1
+func readLines(reader io.Reader, delimiters []string, trimDelimiter bool) ([]string, error) {
+	if reader == nil {
+		reader = os.Stdin
 	}
-	if delim == "" {
-		delim = "\r\n"
+	if len(delimiters) == 0 {
+		delimiters = []string{"\r\n", "\r", "\n"}
 	}
-
-	reader := bufio.NewReader(os.Stdin)
-	lines := make([]string, 0, numLines)
-
-	for i := 0; i < numLines; i++ {
-		line, err := reader.ReadString('\n')
-		if err != nil && err != io.EOF {
-			return lines, err
+	lines := make([]string, 0)
+	var lastErr error
+	for {
+		line, err := readSingleLine(reader, delimiters, trimDelimiter)
+		if err != nil {
+			lastErr = err
+			if err == io.EOF {
+				if line != "" {
+					lines = append(lines, line)
+				}
+				break
+			}
+			return nil, err
 		}
-
-		if returnWithoutDelim {
-			line = strings.TrimSuffix(line, "\n")
-			line = strings.TrimSuffix(line, "\r")
+		if line != "" || lastErr != io.EOF {
+			lines = append(lines, line)
 		}
-		lines = append(lines, line)
-
-		if err == io.EOF {
-			break
-		}
+	}
+	if lastErr != nil && lastErr != io.EOF {
+		return nil, lastErr
 	}
 
 	return lines, nil
@@ -1132,62 +1167,56 @@ expressly permitted. Your use is logged for security purposes.
 
 	// trap SIGINT handled by default (Ctrl+C ends program)
 
+	lines := make([]string, 0)
+
 	// interactive loop
 	for {
 		fmt.Fprintf(os.Stderr, "\n%s: ", blue+"You"+normal)
 
-		// open /dev/tty for per-iteration multi-line input terminated by Ctrl+D
-		tty, err := openTTY()
-		if err != nil {
-			// fallback: read from stdin (non-interactive)
-			inputBytes, err := ioutil.ReadAll(os.Stdin)
-			if err != nil && err != io.EOF {
-				fmt.Fprintf(os.Stderr, "%sFailed reading input: %v%s\n", red, err, normal)
-				return
-			}
-			userInput := strings.TrimRight(string(inputBytes), "\r\n")
-			if userInput == "" {
-				// EOF with no input -> exit
-				fmt.Println()
-				return
-			}
-			// handle commands and requests below
-			if handleInteractiveInput(userInput, convFile, cfg) {
-				// if it returned true, continue loop
-				continue
-			}
-			// proceed to send message
-			if err := processMessage(userInput, convFile, cfg, sysPromptContent, ACCESS_TOKEN); err != nil {
-				fmt.Fprintf(os.Stderr, "%sError: %v%s\n", red, err, normal)
-			}
-			return
-		}
-
-		// read all from tty until EOF (Ctrl+D)
-		inputBytes, err := ioutil.ReadAll(tty)
-		tty.Close()
+		// read first line
+		firstLine, err := readSingleLine(nil, []string{"\r\n", "\r", "\n"}, true)
 		if err != nil && err != io.EOF {
 			fmt.Fprintf(os.Stderr, "%sFailed reading input: %v%s\n", red, err, normal)
 			return
 		}
-		userInput := strings.TrimRight(string(inputBytes), "\r\n")
-		if userInput == "" {
-			// if user immediately sends EOF without typing -> exit
-			fmt.Println()
-			return
-		}
-		// handle commands
-		if handled := handleInteractiveInput(userInput, convFile, cfg); handled {
+		if firstLine == "" {
+			// EOF with no input -> restart loop
 			continue
 		}
+
+		firstLineTrimmed := strings.TrimSpace(firstLine)
+		if strings.HasPrefix(firstLineTrimmed, "/") {
+			// Check if it's a command
+			if handled := handleInteractiveInput(firstLineTrimmed, convFile, cfg); handled {
+				continue
+			}
+		}
+
+		// If it wasn't a command, read the rest of the multi-line input until EOF
+		if err == nil { // only if we didn't get an EOF on the first read
+			remainingLines, err := readLines(nil, []string{"\r\n", "\r", "\n"}, true)
+			if err != nil && err != io.EOF {
+				fmt.Fprintf(os.Stderr, "%sFailed reading multi-line input: %v%s\n", red, err, normal)
+				continue
+			}
+			lines = append([]string{firstLine}, remainingLines...)
+		}
+
+		userInput := strings.Join(lines, "\n")
+		userInput = strings.TrimSpace(userInput)
+
+		if userInput == "" {
+			continue
+		}
+
 		// append user message
 		if err := appendMessage(convFile, "user", userInput); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed appending message: %v%s\n", red, err, normal)
 			continue
 		}
 		// re-check limit
-		count, _ = messageCount(convFile)
-		limit, _ = strconv.Atoi(cfg["HISTORY_LIMIT"])
+		count, _ := messageCount(convFile)
+		limit, _ := strconv.Atoi(cfg["HISTORY_LIMIT"])
 		if count > limit {
 			fmt.Fprintf(os.Stderr, "%sAfter adding your message, the conversation file exceeded the limit (%d).%s\nI did not remove messages. Increase limit with -L or use another file.\n", red, limit, normal)
 			os.Exit(1)
@@ -1241,6 +1270,7 @@ expressly permitted. Your use is logged for security purposes.
 				resp.Body.Close()
 				continue
 			}
+			fmt.Fprintf(os.Stderr, "\n%s\n", blue+"Assistant:"+normal)
 			assistantText, err := handleStream(resp.Body, convFile)
 			resp.Body.Close()
 			if err != nil {
@@ -1264,6 +1294,7 @@ expressly permitted. Your use is logged for security purposes.
 				fmt.Fprintf(os.Stderr, "%sAPI error: %s%s\n%s\n", red, resp.Status, normal, string(body))
 				continue
 			}
+			fmt.Fprintf(os.Stderr, "\n%s\n", blue+"Assistant:"+normal)
 			assistantText, err := handleNonStream(body)
 			if err != nil {
 				// we printed raw body already; don't treat as fatal
