@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -55,17 +56,16 @@ var (
 	apiEnvNames = []string{"NVIDIA_BUILD_AI_ACCESS_TOKEN", "NVIDIA_ACCESS_TOKEN", "ACCESS_TOKEN", "NVIDIA_API_KEY", "API_KEY"}
 )
 
-type Settings struct {
-	Model            string  `json:"model"`
-	Temperature      float64 `json:"temperature"`
-	TopP             float64 `json:"top_p"`
-	FrequencyPenalty float64 `json:"frequency_penalty"`
-	PresencePenalty  float64 `json:"presence_penalty"`
-	MaxTokens        int     `json:"max_tokens"`
-	Stream           bool    `json:"stream"`
-	ReasoningEffort  string  `json:"reasoning_effort"`
-	Stop             string  `json:"stop,omitempty"`
-	HistoryLimit     int     `json:"history_limit,omitempty"`
+// ModelSettings represents the settings for a single model or the default settings.
+// It's a map to flexibly accommodate various parameters across different models.
+type ModelSettings map[string]interface{}
+
+// TopLevelSettings holds the overall settings in the conversation file.
+type TopLevelSettings struct {
+	Stream       bool                   `json:"stream"`
+	HistoryLimit int                    `json:"history_limit"`
+	Default      ModelSettings          `json:"default"`
+	Models       map[string]ModelSettings `json:"models"`
 }
 
 type Message struct {
@@ -73,10 +73,11 @@ type Message struct {
 	Content string `json:"content"`
 }
 
+// ConversationFile is the top-level structure for the conversation JSON file.
 type ConversationFile struct {
-	System   string    `json:"system"`
-	Settings Settings  `json:"settings"`
-	Messages []Message `json:"messages"`
+	System   string           `json:"system"`
+	Settings TopLevelSettings `json:"settings"`
+	Messages []Message        `json:"messages"`
 }
 
 func tput(name string) string {
@@ -96,79 +97,74 @@ var (
 )
 
 func printHelp(cfg map[string]string) {
-	fmt.Printf(`%snvidia-chat (go)%s
-Usage: nvidia-chat [OPTIONS] CONVERSATION_FILE
+	var builder strings.Builder
 
-If CONVERSATION_FILE is omitted, one will be created at:
-  %s/conversation-<timestamp>.json
-and its path will be printed.
+	// --- Usage ---
+	builder.WriteString(fmt.Sprintf("%snvidia-chat (go)%s\n", bold, normal))
+	builder.WriteString("Usage: nvidia-chat [OPTIONS] [CONVERSATION_FILE]\n\n")
+	builder.WriteString(fmt.Sprintf("If CONVERSATION_FILE is omitted, one will be created at:\n  %s/conversation-<timestamp>.json\nand its path will be printed.\n\n", cfg["HISTORY_DIR"]))
 
-Options:
-  -m MODEL                model id (default: %s)
-  -T TEMPERATURE          sampling temperature 0..1 (default: %s)
-  -P TOP_P                top_p 0.01..1 (default: %s)
-  -f FREQUENCY_PENALTY    -2..2 (default: %s)
-  -r PRESENCE_PENALTY     -2..2 (default: %s)
-  -M MAX_TOKENS           1..4096 (default: %s)
-  -L LIMIT                max messages allowed in conversation file (default: %d)
-  -s SYS_PROMPT_FILE      path to system prompt text file (content used for this run)
-  -S                      persist -s into the conversation file's top-level "system" (replaces previous)
-  --save-settings         persist current model settings into the conversation file's top-level "settings"
-  --no-stream             disable streaming (equivalent to --stream=false)
-  --stream=true|false     explicitly enable/disable streaming
-  --reasoning EFFORT      reasoning effort: low | medium | high (default: %s)
-  --stop STRING           stop string (empty = omitted)
-  --prompt=text|file|-    non-interactive mode: print AI response for given prompt and exit
-  -k ACCESS_TOKEN         provide API key (overrides env)
-  -l, --list              list supported models (built-in subset) and exit
-  -h, --help              show this help
+	// --- General Options ---
+	builder.WriteString(fmt.Sprintf("%sGeneral Options:%s\n", bold, normal))
+	builder.WriteString(fmt.Sprintf("  -m, --model NAME      Model ID to use (default: %s)\n", defaultModel))
+	builder.WriteString("  -s, --sys-prompt-file PATH\n                        Path to system prompt text file (content used for this run).\n")
+	builder.WriteString("  -S                    Persist the -s content into the conversation file's 'system' field.\n")
+	builder.WriteString("  --save-settings       Persist current model settings into the conversation file.\n")
+	builder.WriteString("  -k, --access-token KEY\n                        Provide API key (overrides environment variables).\n")
+	builder.WriteString("  --prompt TEXT|FILE|-\n                        Non-interactive mode: provide a prompt and print the response.\n")
+	builder.WriteString("  -l, --list            List supported models and exit.\n")
+	builder.WriteString("  --modelinfo NAME      Show detailed settings for a specific model and exit.\n")
+	builder.WriteString("  -h, --help            Show this help.\n\n")
 
-Interactive commands (enter on a new line):
-  /exit, /quit            exit the program
-  /history                print full conversation JSON
-  /clear                  clear conversation messages
-  /save <file>            save conversation to a new file
-  /persist-system         prompts for a file path to persist as the system prompt
-  /model <model_name>     switch model for this session
-  /temperature <0..1>     set temperature for this session
-  /top_p <0.01..1>        set top_p for this session
-  /max_tokens <1..4096>   set max_tokens for this session
-  /stop <string>          set stop string for this session
-  /persist-settings       save the current session's settings to the conversation file
-  /exportlast [-t] <file> export last AI response to a markdown file. (-t: filter thinking)
-  /exportlastn [-t] <n> <file> export last n AI responses to a markdown file. (-t: filter thinking)
-  /exportn [-t] <n> <file> export the Nth-to-last AI response to a markdown file. (-t: filter thinking)
+	// --- Model Setting Options (Dynamic) ---
+	builder.WriteString(fmt.Sprintf("%sModel Setting Options:%s\n", bold, normal))
+	builder.WriteString("These flags override settings for the current session. For model-specific ranges and defaults, use `/modelinfo <model_name>`.\n\n")
 
-Parameter explanations:
-  Reasoning Effort : Controls the effort level for reasoning in reasoning-capable models.
-    'low' provides basic reasoning, 'medium' provides balanced reasoning, and
-    'high' provides detailed step-by-step reasoning.
+	// Collect all unique parameters from all models
+	allParams := make(map[string]ModelParameter)
+	paramOrder := []string{}
+	for _, modelDef := range ModelDefinitions {
+		for name, param := range modelDef.Parameters {
+			if _, exists := allParams[name]; !exists {
+				allParams[name] = param
+				paramOrder = append(paramOrder, name)
+			}
+		}
+	}
+	sort.Strings(paramOrder)
 
-  Stop string: A string (or list of strings) where the API will stop generating further tokens.
-    The returned text will not contain the stop sequence. If empty, the 'stop' field is not sent.
+	// Add global settings to the list
+	paramOrder = append([]string{"stream", "history_limit"}, paramOrder...)
+	allParams["stream"] = ModelParameter{Type: Bool, Default: true, Description: "Enable or disable streaming responses."}
+	allParams["history_limit"] = ModelParameter{Type: Int, Default: defaultHistoryLimit, Description: "Maximum number of messages in conversation history."}
 
-  Max Tokens: The maximum number of tokens to generate in any given call. Generation will stop
-    once this token count is reached.
+	for _, name := range paramOrder {
+		param := allParams[name]
+		flagName := strings.ReplaceAll(name, "_", "-")
+		builder.WriteString(fmt.Sprintf("  --%s VALUE\n", flagName))
+		builder.WriteString(fmt.Sprintf("      %s\n", param.Description))
+		builder.WriteString(fmt.Sprintf("      To unset, use the interactive command: /%s unset\n\n", name))
+	}
 
-  Presence Penalty: Positive values penalize new tokens based on whether they appear in the text so far,
-    increasing model likelihood to talk about new topics.
+	// --- Interactive Commands ---
+	builder.WriteString(fmt.Sprintf("%sInteractive Commands:%s\n", bold, normal))
+	builder.WriteString("  /help                 Show this help message.\n")
+	builder.WriteString("  /exit, /quit          Exit the program.\n")
+	builder.WriteString("  /history              Print full conversation JSON.\n")
+	builder.WriteString("  /clear                Clear conversation messages.\n")
+	builder.WriteString("  /save <file>          Save conversation to a new file.\n")
+	builder.WriteString("  /model <model_name>   Switch model for the session.\n")
+	builder.WriteString("  /modelinfo <name>     List settings for a specific model.\n")
+	builder.WriteString("  /persist-settings     Save the current session's settings to the conversation file.\n")
+	builder.WriteString("  /persist-system <file>\n                        Persist a system prompt from a file.\n")
+	builder.WriteString("  /exportlast [-t] <file>\n                        Export last AI response to a markdown file (-t filters thinking).\n")
+	builder.WriteString("  /exportlastn [-t] <n> <file>\n                        Export last n AI responses.\n")
+	builder.WriteString("  /exportn [-t] <n> <file>\n                        Export the Nth-to-last AI response.\n")
+	builder.WriteString("  /randomodel           Switch to a random supported model.\n\n")
+	builder.WriteString("For any model setting, you can use `/setting_name <value>` or `/setting_name unset`.\n")
+	builder.WriteString("For example: `/temperature 0.8`, `/stop unset`\n\n")
 
-  Frequency Penalty: How much to penalize new tokens based on their existing frequency in the text so far,
-    decreasing model likelihood to repeat the same line verbatim.
-
-  Top P: The top-p sampling mass used for text generation. Not recommended to modify both temperature and top_p.
-
-  Temperature: Sampling temperature for generation. Higher -> less deterministic output.
-
-Important safety message shown at conversation start:
-  AI models generate responses and outputs based on complex algorithms and machine learning techniques,
-  and those responses or outputs may be inaccurate, harmful, biased or indecent. By testing this model,
-  you assume the risk of any harm caused by any response or output of the model. Please do not upload
-  any confidential information or personal data unless expressly permitted. Your use is logged for
-  security purposes.
-
-For full models list and details: https://build.nvidia.com/
-`, bold, normal, cfg["HISTORY_DIR"], cfg["MODEL"], cfg["TEMPERATURE"], cfg["TOP_P"], cfg["FREQUENCY_PENALTY"], cfg["PRESENCE_PENALTY"], cfg["MAX_TOKENS"], defaultHistoryLimit, cfg["REASONING_EFFORT"])
+	fmt.Print(builder.String())
 }
 
 // helpers
@@ -194,16 +190,31 @@ func ensureHistoryFileStructure(path string, cfg map[string]string) error {
 		}
 		// build default file
 		stream := cfg["STREAM"] == "true"
-		s := Settings{
-			Model:            cfg["MODEL"],
-			Temperature:      mustParseFloat(cfg["TEMPERATURE"], 1.0),
-			TopP:             mustParseFloat(cfg["TOP_P"], 1.0),
-			FrequencyPenalty: mustParseFloat(cfg["FREQUENCY_PENALTY"], 0),
-			PresencePenalty:  mustParseFloat(cfg["PRESENCE_PENALTY"], 0),
-			MaxTokens:        mustAtoi(cfg["MAX_TOKENS"], 4096),
-			Stream:           stream,
-			ReasoningEffort:  cfg["REASONING_EFFORT"],
+		limit, _ := strconv.Atoi(cfg["HISTORY_LIMIT"])
+
+		// Create default settings based on the generic model definition
+		defaultSettings := make(ModelSettings)
+		genericDef := GetModelDefinition("others")
+		for name, param := range genericDef.Parameters {
+			defaultSettings[name] = param.Default
 		}
+
+		s := TopLevelSettings{
+			Stream:       stream,
+			HistoryLimit: limit,
+			Default:      defaultSettings,
+			Models:       make(map[string]ModelSettings),
+		}
+		// Add the specific default model to the models map
+		s.Models[defaultModel] = ModelSettings{
+			"temperature":       mustParseFloat(defaultTemperature, 1.0),
+			"top_p":             mustParseFloat(defaultTopP, 1.0),
+			"frequency_penalty": mustParseFloat(defaultFrequency, 0),
+			"presence_penalty":  mustParseFloat(defaultPresence, 0),
+			"max_tokens":        mustAtoi(defaultMaxTokens, 4096),
+			"reasoning_effort":  defaultReasoning,
+		}
+
 		cf := ConversationFile{
 			System:   "",
 			Settings: s,
@@ -212,36 +223,29 @@ func ensureHistoryFileStructure(path string, cfg map[string]string) error {
 		b, _ := json.MarshalIndent(cf, "", "  ")
 		return ioutil.WriteFile(path, b, 0o644)
 	}
+
 	// file exists: verify shape; if not, back up and recreate
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	var tmp interface{}
-	if err := json.Unmarshal(data, &tmp); err != nil {
+	var cf ConversationFile
+	if err := json.Unmarshal(data, &cf); err != nil {
 		// back up and recreate
 		backup := path + ".bak." + strconv.FormatInt(time.Now().Unix(), 10)
 		_ = os.Rename(path, backup)
+		fmt.Fprintf(os.Stderr, "Warning: Conversation file at %s was malformed. Backed up to %s and creating a new one.\n", path, backup)
 		return ensureHistoryFileStructure(path, cfg)
 	}
-	// ensure object with messages array
-	obj, ok := tmp.(map[string]interface{})
-	if !ok {
+
+	// Basic validation of structure
+	if cf.Messages == nil || cf.Settings.Default == nil || cf.Settings.Models == nil {
 		backup := path + ".bak." + strconv.FormatInt(time.Now().Unix(), 10)
 		_ = os.Rename(path, backup)
+		fmt.Fprintf(os.Stderr, "Warning: Conversation file at %s was missing required fields. Backed up to %s and creating a new one.\n", path, backup)
 		return ensureHistoryFileStructure(path, cfg)
 	}
-	if msgs, ok := obj["messages"]; !ok {
-		backup := path + ".bak." + strconv.FormatInt(time.Now().Unix(), 10)
-		_ = os.Rename(path, backup)
-		return ensureHistoryFileStructure(path, cfg)
-	} else {
-		if _, ok := msgs.([]interface{}); !ok {
-			backup := path + ".bak." + strconv.FormatInt(time.Now().Unix(), 10)
-			_ = os.Rename(path, backup)
-			return ensureHistoryFileStructure(path, cfg)
-		}
-	}
+
 	return nil
 }
 
@@ -300,22 +304,49 @@ func persistSettingsToFile(path string, cfg map[string]string) error {
 	if err != nil {
 		return err
 	}
-	stream := cfg["STREAM"] == "true"
-	s := Settings{
-		Model:            cfg["MODEL"],
-		Temperature:      mustParseFloat(cfg["TEMPERATURE"], 1.0),
-		TopP:             mustParseFloat(cfg["TOP_P"], 1.0),
-		FrequencyPenalty: mustParseFloat(cfg["FREQUENCY_PENALTY"], 0),
-		PresencePenalty:  mustParseFloat(cfg["PRESENCE_PENALTY"], 0),
-		MaxTokens:        mustAtoi(cfg["MAX_TOKENS"], 4096),
-		Stream:           stream,
-		ReasoningEffort:  cfg["REASONING_EFFORT"],
-		HistoryLimit:     mustAtoi(cfg["HISTORY_LIMIT"], defaultHistoryLimit),
+
+	modelName := cfg["MODEL"]
+	modelDef := GetModelDefinition(modelName)
+
+	// Get current model settings or initialize if not present
+	modelSettings, ok := cf.Settings.Models[modelName]
+	if !ok {
+		modelSettings = make(ModelSettings)
 	}
-	if cfg["STOP"] != "" {
-		s.Stop = cfg["STOP"]
+
+	// Update settings for the current model from the session config (cfg)
+	for key, paramDef := range modelDef.Parameters {
+		if valStr, ok := cfg[strings.ToUpper(key)]; ok {
+			// Convert string value from cfg to the correct type
+			switch paramDef.Type {
+			case Float:
+				val, err := strconv.ParseFloat(valStr, 64)
+				if err == nil {
+					modelSettings[key] = val
+				}
+			case Int:
+				val, err := strconv.Atoi(valStr)
+				if err == nil {
+					modelSettings[key] = val
+				}
+			case String, StringA:
+				modelSettings[key] = valStr
+			case Bool:
+				val, err := strconv.ParseBool(valStr)
+				if err == nil {
+					modelSettings[key] = val
+				}
+			}
+		}
 	}
-	cf.Settings = s
+
+	// Save the updated model-specific settings
+	cf.Settings.Models[modelName] = modelSettings
+
+	// Also save global settings
+	cf.Settings.Stream = cfg["STREAM"] == "true"
+	cf.Settings.HistoryLimit = mustAtoi(cfg["HISTORY_LIMIT"], defaultHistoryLimit)
+
 	return writeConversation(path, cf)
 }
 
@@ -324,41 +355,55 @@ func applyFileSettingsAsDefaults(path string, cfg map[string]string, provided ma
 	if err != nil {
 		return err
 	}
-	// apply if not provided
-	if !provided["MODEL"] && cf.Settings.Model != "" {
-		cfg["MODEL"] = cf.Settings.Model
+
+	modelName := cfg["MODEL"]
+
+	// Get the settings for the current model, falling back to default settings.
+	settings, ok := cf.Settings.Models[modelName]
+	if !ok {
+		settings = cf.Settings.Default
 	}
-	if !provided["TEMPERATURE"] && cf.Settings.Temperature != 0 {
-		cfg["TEMPERATURE"] = fmt.Sprintf("%g", cf.Settings.Temperature)
-	}
-	if !provided["TOP_P"] && cf.Settings.TopP != 0 {
-		cfg["TOP_P"] = fmt.Sprintf("%g", cf.Settings.TopP)
-	}
-	if !provided["FREQUENCY_PENALTY"] && cf.Settings.FrequencyPenalty != 0 {
-		cfg["FREQUENCY_PENALTY"] = fmt.Sprintf("%g", cf.Settings.FrequencyPenalty)
-	}
-	if !provided["PRESENCE_PENALTY"] && cf.Settings.PresencePenalty != 0 {
-		cfg["PRESENCE_PENALTY"] = fmt.Sprintf("%g", cf.Settings.PresencePenalty)
-	}
-	if !provided["MAX_TOKENS"] && cf.Settings.MaxTokens != 0 {
-		cfg["MAX_TOKENS"] = fmt.Sprintf("%d", cf.Settings.MaxTokens)
-	}
-	if !provided["STREAM"] {
-		if cf.Settings.Stream {
-			cfg["STREAM"] = "true"
-		} else {
-			cfg["STREAM"] = "false"
+
+	// Apply model-specific settings if they were not provided via CLI flags.
+	modelDef := GetModelDefinition(modelName)
+	for key, paramDef := range modelDef.Parameters {
+		configKey := strings.ToUpper(key)
+		if !provided[configKey] {
+			if value, exists := settings[key]; exists {
+				// Convert the loaded value to a string for the cfg map
+				switch paramDef.Type {
+				case Float:
+					if v, ok := value.(float64); ok {
+						cfg[configKey] = fmt.Sprintf("%g", v)
+					}
+				case Int:
+					// JSON unmarshals numbers into float64 by default
+					if v, ok := value.(float64); ok {
+						cfg[configKey] = fmt.Sprintf("%d", int(v))
+					} else if v, ok := value.(int); ok {
+						cfg[configKey] = fmt.Sprintf("%d", v)
+					}
+				case String, StringA:
+					if v, ok := value.(string); ok {
+						cfg[configKey] = v
+					}
+				case Bool:
+					if v, ok := value.(bool); ok {
+						cfg[configKey] = strconv.FormatBool(v)
+					}
+				}
+			}
 		}
 	}
-	if !provided["REASONING_EFFORT"] && cf.Settings.ReasoningEffort != "" {
-		cfg["REASONING_EFFORT"] = cf.Settings.ReasoningEffort
-	}
-	if !provided["STOP"] && cf.Settings.Stop != "" {
-		cfg["STOP"] = cf.Settings.Stop
+
+	// Apply global settings
+	if !provided["STREAM"] {
+		cfg["STREAM"] = strconv.FormatBool(cf.Settings.Stream)
 	}
 	if !provided["HISTORY_LIMIT"] && cf.Settings.HistoryLimit != 0 {
 		cfg["HISTORY_LIMIT"] = fmt.Sprintf("%d", cf.Settings.HistoryLimit)
 	}
+
 	return nil
 }
 
@@ -393,29 +438,72 @@ func validateNumericRanges(cfg map[string]string) error {
 	return nil
 }
 
-// Build payload JSON (messages must already include system if desired)
+// buildPayload constructs the JSON payload for the API call based on the current model's definition.
 func buildPayload(cfg map[string]string, messages []Message) ([]byte, error) {
-	stream := cfg["STREAM"] == "true"
-	temp, _ := strconv.ParseFloat(cfg["TEMPERATURE"], 64)
-	topP, _ := strconv.ParseFloat(cfg["TOP_P"], 64)
-	freq, _ := strconv.ParseFloat(cfg["FREQUENCY_PENALTY"], 64)
-	pres, _ := strconv.ParseFloat(cfg["PRESENCE_PENALTY"], 64)
-	maxTokens, _ := strconv.Atoi(cfg["MAX_TOKENS"])
+	modelName := cfg["MODEL"]
+	modelDef := GetModelDefinition(modelName)
 
 	payload := map[string]interface{}{
-		"model":             cfg["MODEL"],
-		"messages":          messages,
-		"temperature":       temp,
-		"top_p":             topP,
-		"frequency_penalty": freq,
-		"presence_penalty":  pres,
-		"max_tokens":        maxTokens,
-		"stream":            stream,
-		"reasoning_effort":  cfg["REASONING_EFFORT"],
+		"model":    modelName,
+		"messages": messages,
+		"stream":   cfg["STREAM"] == "true",
 	}
-	if cfg["STOP"] != "" {
-		payload["stop"] = cfg["STOP"]
+
+	for key, paramDef := range modelDef.Parameters {
+		// Skip parameters that are not part of the API payload (e.g., internal 'thinking' flag)
+		if paramDef.APIKey == "" {
+			continue
+		}
+
+		configKey := strings.ToUpper(key)
+		valStr, ok := cfg[configKey]
+		if !ok {
+			continue // Should not happen if cfg is populated correctly from defaults
+		}
+
+		// Convert value and add to payload
+		switch paramDef.Type {
+		case Float:
+			if val, err := strconv.ParseFloat(valStr, 64); err == nil {
+				payload[paramDef.APIKey] = val
+			}
+		case Int:
+			if val, err := strconv.Atoi(valStr); err == nil {
+				// Special handling for seed=0, which usually means "omit"
+				if key == "seed" && val == 0 {
+					if modelName != "deepseek-ai/deepseek-v3.1" {
+						continue // Omit for other models
+					}
+				}
+				payload[paramDef.APIKey] = val
+			}
+		case String, StringA:
+			// Don't send empty stop strings
+			if key == "stop" && valStr == "" {
+				continue
+			}
+			payload[paramDef.APIKey] = valStr
+		case Bool:
+			if val, err := strconv.ParseBool(valStr); err == nil {
+				payload[paramDef.APIKey] = val
+			}
+		}
 	}
+
+	// Handle special payload structures like chat_template_kwargs
+	if modelDef.ChatTemplateKwargsThinking {
+		if thinking, err := strconv.ParseBool(cfg["THINKING"]); err == nil {
+			payload["chat_template_kwargs"] = map[string]interface{}{"thinking": thinking}
+		}
+	}
+
+	// Handle deepseek seed nil case. If seed wasn't in cfg, it won't be in payload yet.
+	if modelName == "deepseek-ai/deepseek-v3.1" {
+		if _, exists := payload["seed"]; !exists {
+			payload["seed"] = nil
+		}
+	}
+
 	return json.Marshal(payload)
 }
 
@@ -610,6 +698,18 @@ func processMessage(userInput, convFile string, cfg map[string]string, sysPrompt
 		return fmt.Errorf("read conversation: %w", err)
 	}
 	var messages []Message
+
+	// Handle special thinking-related system messages
+	modelDef := GetModelDefinition(cfg["MODEL"])
+	if modelDef.PrependedSystemMessageOnThinking != "" {
+		thinkingEnabled, _ := strconv.ParseBool(cfg["THINKING"])
+		if thinkingEnabled {
+			messages = append(messages, Message{Role: "system", Content: modelDef.PrependedSystemMessageOnThinking})
+		} else if cfg["MODEL"] == "nvidia/llama-3.3-nemotron-super-49b-v1.5" { // Special case for disabling
+			messages = append(messages, Message{Role: "system", Content: "/no_think"})
+		}
+	}
+
 	if effectiveSystem != "" {
 		messages = append(messages, Message{Role: "system", Content: effectiveSystem})
 	}
@@ -777,6 +877,7 @@ func main() {
 	SAVE_SETTINGS := false
 	LIST_ONLY := false
 	PROMPT_MODE := "" // for --prompt
+	MODEL_INFO_FLAG := "" // for --modelinfo
 
 	// helper to get next argument (used when flag and its value are separate tokens)
 	nextArg := func(i *int) (string, error) {
@@ -945,6 +1046,16 @@ func main() {
 				val = v
 			}
 			PROMPT_MODE = val
+		case "--modelinfo":
+			if val == "" {
+				v, err := nextArg(&i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "%s%s%s\n", red, err.Error(), normal)
+					os.Exit(1)
+				}
+				val = v
+			}
+			MODEL_INFO_FLAG = val
 		case "--stream":
 			if val == "true" {
 				cfg["STREAM"] = "true"
@@ -986,6 +1097,12 @@ func main() {
 		}
 		fmt.Println()
 		fmt.Println("View the full models list and details at: https://build.nvidia.com/")
+		return
+	}
+
+	// If model info requested
+	if MODEL_INFO_FLAG != "" {
+		printModelInfo(MODEL_INFO_FLAG)
 		return
 	}
 
@@ -1394,6 +1511,145 @@ func parseTFlag(parts []string) (bool, []string) {
 	return filterThinking, newParts
 }
 
+func getModelInfoString(modelName string, modelDef ModelDefinition) string {
+	var builder strings.Builder
+
+	builder.WriteString(fmt.Sprintf("%sModel: %s%s\n\n", bold, modelName, normal))
+	builder.WriteString(fmt.Sprintf("%sParameters:%s\n", bold, normal))
+
+	paramNames := make([]string, 0, len(modelDef.Parameters))
+	for name := range modelDef.Parameters {
+		paramNames = append(paramNames, name)
+	}
+	sort.Strings(paramNames)
+
+	for _, name := range paramNames {
+		param := modelDef.Parameters[name]
+		builder.WriteString(fmt.Sprintf("  %s%s%s\n", blue, name, normal))
+		builder.WriteString(fmt.Sprintf("    Description: %s\n", param.Description))
+		builder.WriteString(fmt.Sprintf("    Type: %s\n", param.Type))
+
+		defaultStr := "Not set"
+		if param.Default != nil {
+			// Handle float formatting
+			if f, ok := param.Default.(float64); ok {
+				defaultStr = fmt.Sprintf("%g", f)
+			} else {
+				defaultStr = fmt.Sprintf("%v", param.Default)
+			}
+		} else {
+			// Special case for deepseek seed
+			if modelName == "deepseek-ai/deepseek-v3.1" && name == "seed" {
+				defaultStr = "null (omitted)"
+			}
+		}
+
+		builder.WriteString(fmt.Sprintf("    Default: %s\n", defaultStr))
+
+		if param.Type == Float || param.Type == Int {
+			hasMin := param.Min != 0 || (param.Type == Float && param.Min == 0.0)
+			hasMax := param.Max != 0
+			if hasMin && hasMax {
+				builder.WriteString(fmt.Sprintf("    Range: %g to %g\n", param.Min, param.Max))
+			} else if hasMin {
+				builder.WriteString(fmt.Sprintf("    Range: >= %g\n", param.Min))
+			} else if hasMax {
+				builder.WriteString(fmt.Sprintf("    Range: <= %g\n", param.Max))
+			}
+		}
+
+		if len(param.Options) > 0 {
+			builder.WriteString(fmt.Sprintf("    Options: %s\n", strings.Join(param.Options, ", ")))
+		}
+		builder.WriteString("\n")
+	}
+
+	if modelDef.PrependedSystemMessageOnThinking != "" || modelDef.ChatTemplateKwargsThinking {
+		builder.WriteString(fmt.Sprintf("%sSpecial Behavior:%s\n", bold, normal))
+		if modelDef.PrependedSystemMessageOnThinking != "" {
+			builder.WriteString(fmt.Sprintf("  - This model uses a system message to control thinking. Use `/thinking true` to enable.\n"))
+		}
+		if modelDef.ChatTemplateKwargsThinking {
+			builder.WriteString(fmt.Sprintf("  - This model uses 'chat_template_kwargs' to control thinking. Use `/thinking true` to enable.\n"))
+		}
+	}
+	return builder.String()
+}
+
+func printModelInfo(modelName string) {
+	modelDef, exists := ModelDefinitions[modelName]
+	if !exists {
+		fmt.Fprintf(os.Stderr, "%sError: Model '%s' not found.%s\n", red, modelName, normal)
+		fmt.Fprintf(os.Stderr, "Use the -l flag to list all supported models.\n")
+		os.Exit(1)
+	}
+
+	info := getModelInfoString(modelName, modelDef)
+	fmt.Print(info)
+}
+
+// validateParameter checks if a given value string is valid for a parameter.
+func validateParameter(paramName, value string, modelDef ModelDefinition) error {
+	param, ok := modelDef.Parameters[paramName]
+	if !ok {
+		// Also check global settings like stream/history_limit
+		if paramName == "stream" {
+			_, err := strconv.ParseBool(value)
+			if err != nil {
+				return fmt.Errorf("invalid boolean value for stream: %s", value)
+			}
+			return nil
+		}
+		if paramName == "history_limit" {
+			v, err := strconv.Atoi(value)
+			if err != nil || v < 0 {
+				return fmt.Errorf("invalid non-negative integer for history_limit: %s", value)
+			}
+			return nil
+		}
+		return fmt.Errorf("unknown parameter: %s", paramName)
+	}
+
+	switch param.Type {
+	case Float:
+		v, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return fmt.Errorf("invalid float value: %s", value)
+		}
+		if (param.Min != 0 || param.Max != 0) && (v < param.Min || v > param.Max) {
+			return fmt.Errorf("value out of range [%g, %g]: %g", param.Min, param.Max, v)
+		}
+	case Int:
+		v, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid integer value: %s", value)
+		}
+		if (param.Min != 0 || param.Max != 0) && (float64(v) < param.Min || float64(v) > param.Max) {
+			return fmt.Errorf("value out of range [%d, %d]: %d", int(param.Min), int(param.Max), v)
+		}
+	case String:
+		if len(param.Options) > 0 {
+			found := false
+			for _, opt := range param.Options {
+				if value == opt {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("invalid option. Must be one of: %s", strings.Join(param.Options, ", "))
+			}
+		}
+	case Bool:
+		if _, err := strconv.ParseBool(value); err != nil {
+			return fmt.Errorf("invalid boolean value (true/false): %s", value)
+		}
+	case StringA:
+		// No specific validation for string arrays, any string is fine.
+	}
+	return nil
+}
+
 func handleInteractiveInput(userInput, convFile string, cfg map[string]string) bool {
 	trimmed := strings.TrimSpace(userInput)
 	parts := strings.Fields(trimmed)
@@ -1401,24 +1657,26 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 		return false
 	}
 	command := parts[0]
+	if !strings.HasPrefix(command, "/") {
+		return false
+	}
+	commandName := strings.TrimPrefix(command, "/")
 
-	switch command {
-	case "/exit", "/quit":
+	// --- Static commands ---
+	switch commandName {
+	case "exit", "quit":
 		fmt.Fprintln(os.Stderr, "Bye.")
 		os.Exit(0)
 		return true
-
-	case "/history":
-		fmt.Fprintf(os.Stderr, "%s:\n", convFile)
+	case "history":
 		b, err := ioutil.ReadFile(convFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed reading conversation: %v%s\n", red, err, normal)
-			return true
+		} else {
+			fmt.Fprintf(os.Stderr, "%s:\n%s\n", convFile, string(b))
 		}
-		fmt.Println(string(b))
 		return true
-
-	case "/clear":
+	case "clear":
 		cf, err := readConversation(convFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed reading conversation: %v%s\n", red, err, normal)
@@ -1431,30 +1689,23 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 			fmt.Fprintf(os.Stderr, "%sMessages cleared%s\n", green, normal)
 		}
 		return true
-
-	case "/save":
+	case "save":
 		if len(parts) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: /save path")
+			fmt.Fprintln(os.Stderr, "Usage: /save <path>")
 			return true
 		}
-		target := parts[1]
-		if err := copyFile(convFile, target); err != nil {
+		if err := copyFile(convFile, parts[1]); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to save: %v%s\n", red, err, normal)
 		} else {
-			fmt.Fprintf(os.Stderr, "Saved to %s\n", target)
+			fmt.Fprintf(os.Stderr, "Saved to %s\n", parts[1])
 		}
 		return true
-
-	case "/persist-system":
+	case "persist-system":
 		if len(parts) < 2 {
 			fmt.Fprintln(os.Stderr, "Usage: /persist-system <file>")
 			return true
 		}
 		path := parts[1]
-		if !fileExists(path) {
-			fmt.Fprintf(os.Stderr, "%sFile not found: %s%s\n", red, path, normal)
-			return true
-		}
 		content, err := ioutil.ReadFile(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to read file: %v%s\n", red, err, normal)
@@ -1463,127 +1714,138 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 		if err := persistSystemToFile(convFile, string(content)); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to persist system prompt: %v%s\n", red, err, normal)
 		} else {
-			fmt.Fprintf(os.Stderr, "%sPersisted system prompt from %s into conversation file's .system%s\n", green, path, normal)
+			fmt.Fprintf(os.Stderr, "%sPersisted system prompt from %s%s\n", green, path, normal)
 		}
 		return true
-
-	case "/model", "/temperature", "/top_p", "/frequency_penalty", "/presence_penalty", "/max_tokens", "/reasoning", "/stop", "/limit", "/stream":
-		if len(parts) < 2 {
-			fmt.Fprintf(os.Stderr, "Usage: %s <value>\n", command)
-			return true
-		}
-		val := parts[1]
-		key := strings.TrimPrefix(command, "/")
-		key = strings.ToUpper(key)
-		if key == "REASONING" {
-			key = "REASONING_EFFORT"
-		}
-		if key == "LIMIT" {
-			key = "HISTORY_LIMIT"
-		}
-		// quick validation
-		tempCfg := make(map[string]string)
-		for k, v := range cfg {
-			tempCfg[k] = v
-		}
-		tempCfg[key] = val
-		if err := validateNumericRanges(tempCfg); err != nil {
-			fmt.Fprintf(os.Stderr, "%sInvalid value: %v%s\n", red, err, normal)
-			return true
-		}
-		cfg[key] = val
-		fmt.Fprintf(os.Stderr, "%s%s set to %s%s\n", green, key, val, normal)
-		return true
-
-	case "/persist-settings":
+	case "persist-settings":
 		if err := persistSettingsToFile(convFile, cfg); err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to persist settings: %v%s\n", red, err, normal)
 		} else {
 			fmt.Fprintf(os.Stderr, "%sPersisted current settings to %s%s\n", green, convFile, normal)
 		}
 		return true
-	case "/exportlast":
+	case "exportlast", "exportn", "exportlastn":
 		filterThinking, newParts := parseTFlag(parts)
-		parts = newParts
-		if len(parts) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: /exportlast [-t] <file>")
-			return true
+		var err error
+		switch commandName {
+		case "exportlast":
+			if len(newParts) < 2 {
+				fmt.Fprintln(os.Stderr, "Usage: /exportlast [-t] <file>")
+				return true
+			}
+			err = exportLastN(1, convFile, newParts[1], filterThinking)
+		case "exportn":
+			if len(newParts) < 3 {
+				fmt.Fprintln(os.Stderr, "Usage: /exportn [-t] <n> <file>")
+				return true
+			}
+			n, _ := strconv.Atoi(newParts[1])
+			err = exportNth(n, convFile, newParts[2], filterThinking)
+		case "exportlastn":
+			if len(newParts) < 3 {
+				fmt.Fprintln(os.Stderr, "Usage: /exportlastn [-t] <n> <file>")
+				return true
+			}
+			n, _ := strconv.Atoi(newParts[1])
+			err = exportLastN(n, convFile, newParts[2], filterThinking)
 		}
-		targetFile := parts[1]
-		if err := exportLastN(1, convFile, targetFile, filterThinking); err != nil {
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "%sFailed to export: %v%s\n", red, err, normal)
 		} else {
-			fmt.Fprintf(os.Stderr, "%sExported last response to %s%s\n", green, targetFile, normal)
+			fmt.Fprintf(os.Stderr, "%sExport successful%s\n", green, normal)
 		}
 		return true
-	case "/exportn":
-		filterThinking, newParts := parseTFlag(parts)
-		parts = newParts
-		if len(parts) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: /exportn [-t] <n> <file>")
-			return true
-		}
-		n, err := strconv.Atoi(parts[1])
-		if err != nil || n <= 0 {
-			fmt.Fprintf(os.Stderr, "%sInvalid number: %s%s\n", red, parts[1], normal)
-			return true
-		}
-		targetFile := parts[2]
-		if err := exportNth(n, convFile, targetFile, filterThinking); err != nil {
-			fmt.Fprintf(os.Stderr, "%sFailed to export: %v%s\n", red, err, normal)
-		} else {
-			fmt.Fprintf(os.Stderr, "%sExported %d(th) last response to %s%s\n", green, n, targetFile, normal)
-		}
-		return true
-	case "/exportlastn":
-		filterThinking, newParts := parseTFlag(parts)
-		parts = newParts
-		if len(parts) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: /exportlastn [-t] <n> <file>")
-			return true
-		}
-		n, err := strconv.Atoi(parts[1])
-		if err != nil || n <= 0 {
-			fmt.Fprintf(os.Stderr, "%sInvalid number: %s%s\n", red, parts[1], normal)
-			return true
-		}
-		targetFile := parts[2]
-		if err := exportLastN(n, convFile, targetFile, filterThinking); err != nil {
-			fmt.Fprintf(os.Stderr, "%sFailed to export: %v%s\n", red, err, normal)
-		} else {
-			fmt.Fprintf(os.Stderr, "%sExported last %d responses to %s%s\n", green, n, targetFile, normal)
-		}
-		return true
-	case "/randomodel":
+	case "randomodel":
 		newModel := modelsList[rand.Intn(len(modelsList))]
 		cfg["MODEL"] = newModel
 		fmt.Fprintf(os.Stderr, "%sSwitched model to %s%s\n", green, newModel, normal)
 		return true
-	case "/help":
-		fmt.Fprintln(os.Stderr, "Available commands:")
-		fmt.Fprintln(os.Stderr, "  /exit, /quit: Exit the program")
-		fmt.Fprintln(os.Stderr, "  /history: Print full conversation JSON")
-		fmt.Fprintln(os.Stderr, "  /clear: Clear conversation messages")
-		fmt.Fprintln(os.Stderr, "  /save <file>: Save conversation to a new file")
-		fmt.Fprintln(os.Stderr, "  /persist-system <file>: Persist a system prompt from a file")
-		fmt.Fprintln(os.Stderr, "  /model <model_name>: Switch model for this session")
-		fmt.Fprintln(os.Stderr, "  /temperature <0..1>: Set temperature for this session")
-		fmt.Fprintln(os.Stderr, "  /top_p <0.01..1>: Set top_p for this session")
-		fmt.Fprintln(os.Stderr, "  /max_tokens <1..4096>: Set max_tokens for this session")
-		fmt.Fprintln(os.Stderr, "  /stop <string>: Set stop string for this session")
-		fmt.Fprintln(os.Stderr, "  /limit <number>: Set history limit for this session")
-		fmt.Fprintln(os.Stderr, "  /stream <true|false>: Enable/disable streaming for this session")
-		fmt.Fprintln(os.Stderr, "  /persist-settings: Save the current session's settings to the conversation file")
-		fmt.Fprintln(os.Stderr, "  /exportlast [-t] <file>: Export last AI response to a markdown file. (-t: filter thinking)")
-		fmt.Fprintln(os.Stderr, "  /exportlastn [-t] <n> <file>: Export last n AI responses to a markdown file. (-t: filter thinking)")
-		fmt.Fprintln(os.Stderr, "  /exportn [-t] <n> <file>: Export the Nth-to-last AI response to a markdown file. (-t: filter thinking)")
-		fmt.Fprintln(os.Stderr, "  /randomodel: Switch to a random model")
-		fmt.Fprintln(os.Stderr, "  /help: Show this help message")
+	case "help":
+		printHelp(cfg)
 		return true
-
-	default:
-		return false
+	case "model":
+		if len(parts) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: /model <model_name>")
+			return true
+		}
+		modelName := parts[1]
+		if _, exists := ModelDefinitions[modelName]; !exists {
+			// Check if it's in the master list even if not in our detailed defs
+			found := false
+			for _, m := range modelsList {
+				if m == modelName {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fmt.Fprintf(os.Stderr, "%sModel '%s' not found in the list of supported models.%s\n", red, modelName, normal)
+				return true
+			}
+		}
+		cfg["MODEL"] = modelName
+		fmt.Fprintf(os.Stderr, "%sModel set to %s%s\n", green, modelName, normal)
+		return true
+	case "modelinfo":
+		if len(parts) < 2 {
+			fmt.Fprintln(os.Stderr, "Usage: /modelinfo <model_name>")
+			return true
+		}
+		modelName := parts[1]
+		modelDef, exists := ModelDefinitions[modelName]
+		if !exists {
+			fmt.Fprintf(os.Stderr, "%sError: Model '%s' not found.%s\n", red, modelName, normal)
+			return true
+		}
+		info := getModelInfoString(modelName, modelDef)
+		fmt.Fprint(os.Stderr, info)
+		return true
 	}
+
+	// --- Dynamic parameter setting commands ---
+	modelDef := GetModelDefinition(cfg["MODEL"])
+	if _, ok := modelDef.Parameters[commandName]; ok || commandName == "stream" || commandName == "history_limit" {
+		if len(parts) < 2 {
+			fmt.Fprintf(os.Stderr, "Usage: /%s <value> or /%s unset\n", commandName, commandName)
+			return true
+		}
+		value := parts[1]
+		configKey := strings.ToUpper(commandName)
+
+		if value == "unset" {
+			// Find the default value from the model definition and set it
+			param, exists := modelDef.Parameters[commandName]
+			if !exists {
+				// Handle global settings
+				if commandName == "stream" {
+					cfg["STREAM"] = strconv.FormatBool(true)
+				} else if commandName == "history_limit" {
+					cfg["HISTORY_LIMIT"] = fmt.Sprintf("%d", defaultHistoryLimit)
+				}
+			} else {
+				// Convert default value to string and set it in cfg
+				defaultValStr := ""
+				if f, ok := param.Default.(float64); ok {
+					defaultValStr = fmt.Sprintf("%g", f)
+				} else {
+					defaultValStr = fmt.Sprintf("%v", param.Default)
+				}
+				cfg[configKey] = defaultValStr
+			}
+			fmt.Fprintf(os.Stderr, "%s%s unset (reverted to default)%s\n", green, commandName, normal)
+		} else {
+			// Validate and set the new value
+			if err := validateParameter(commandName, value, modelDef); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError: %v%s\n", red, err, normal)
+				return true
+			}
+			cfg[configKey] = value
+			fmt.Fprintf(os.Stderr, "%s%s set to %s%s\n", green, commandName, value, normal)
+		}
+		return true
+	}
+
+	return false
 }
 
 func copyFile(src, dst string) error {
