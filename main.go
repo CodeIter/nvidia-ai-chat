@@ -1161,8 +1161,8 @@ the risk of any harm caused by any response or output of the model. Please
 do not upload any confidential information or personal data unless
 expressly permitted. Your use is logged for security purposes.
 `)
-	fmt.Fprintf(os.Stderr, "%sNVIDIA chat (go)%s model=%s temperature=%s top_p=%s max_tokens=%s stream=%s freq_penalty=%s pres_penalty=%s reasoning=%s stop=%q\n", bold, normal, cfg["MODEL"], cfg["TEMPERATURE"], cfg["TOP_P"], cfg["MAX_TOKENS"], cfg["STREAM"], cfg["FREQUENCY_PENALTY"], cfg["PRESENCE_PENALTY"], cfg["REASONING_EFFORT"], cfg["STOP"])
-	fmt.Fprintf(os.Stderr, "Conversation file: %s\n", convFile)
+	fmt.Fprintf(os.Stderr, "%sNVIDIA chat (go)%s model=%s temperature=%s top_p=%s max_tokens=%s stream=%s freq_penalty=%s pres_penalty=%s reasoning=%s stop=%q\n\n", bold, normal, cfg["MODEL"], cfg["TEMPERATURE"], cfg["TOP_P"], cfg["MAX_TOKENS"], cfg["STREAM"], cfg["FREQUENCY_PENALTY"], cfg["PRESENCE_PENALTY"], cfg["REASONING_EFFORT"], cfg["STOP"])
+	fmt.Fprintf(os.Stderr, "Conversation file: %s\n\n", convFile)
 	fmt.Fprintln(os.Stderr, "Type your message and end it by Ctrl+D. Commands: /exit /quit /history /clear /save <file> /persist-system (see help)")
 
 	// trap SIGINT handled by default (Ctrl+C ends program)
