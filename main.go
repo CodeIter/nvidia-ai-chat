@@ -29,29 +29,28 @@ var (
 	defaultPresence      = "0"
 	defaultMaxTokens     = "4096"
 	defaultStream        = "true"
-	defaultReasoning     = "medium"
+	defaultReasoning     = "low"
 	defaultStop          = ""
 	defaultHistorySubdir = ".cache/nvidia-chat"
 	defaultHistoryLimit  = 40
 	modelsList           = []string{
 		"openai/gpt-oss-120b",
-		"gpt-oss-120b",
-		"seed-oss-36b-instruct",
-		"qwen3-coder-480b-a35b-instruct",
-		"nvidia-nemotron-nano-9b-v2",
-		"llama-3.3-nemotron-super-49b-v1.5",
-		"mistral-nemotron",
-		"mistral-small-24b-instruct",
-		"deepseek-v3.1",
-		"deepseek-r1-distill-qwen-32b",
-		"deepseek-r1-distill-llama-8b",
+		"bytedance/seed-oss-36b-instruct",
+		"qwen/qwen3-coder-480b-a35b-instruct",
+		"nvidia/nvidia-nemotron-nano-9b-v2",
+		"nvidia/llama-3.3-nemotron-super-49b-v1.5",
+		"mistralai/mistral-nemotron",
+		"mistralai/mistral-small-24b-instruct",
+		"deepseek-ai/deepseek-v3.1",
+		"deepseek-ai/deepseek-r1-distill-qwen-32b",
+		"deepseek-ai/deepseek-r1-distill-llama-8b",
 		"deepseek-r1-0528",
-		"qwen3-next-80b-a3b-instruct",
-		"qwen3-next-80b-a3b-thinking",
-		"kimi-k2-instruct-0905",
-		"codegemma-7b",
-		"gemma-7b",
-		"mixtral-8x22b-instruct-v0.1",
+		"qwen/qwen3-next-80b-a3b-instruct",
+		"qwen/qwen3-next-80b-a3b-thinking",
+		"moonshotai/kimi-k2-instruct-0905",
+		"google/codegemma-7b",
+		"google/gemma-7b",
+		"mistralai/mixtral-8x22b-instruct-v0.1",
 	}
 	apiEnvNames = []string{"NVIDIA_BUILD_AI_ACCESS_TOKEN", "NVIDIA_ACCESS_TOKEN", "ACCESS_TOKEN", "NVIDIA_API_KEY", "API_KEY"}
 )
@@ -1163,7 +1162,7 @@ expressly permitted. Your use is logged for security purposes.
 `)
 	fmt.Fprintf(os.Stderr, "%sNVIDIA chat (go)%s model=%s temperature=%s top_p=%s max_tokens=%s stream=%s freq_penalty=%s pres_penalty=%s reasoning=%s stop=%q\n\n", bold, normal, cfg["MODEL"], cfg["TEMPERATURE"], cfg["TOP_P"], cfg["MAX_TOKENS"], cfg["STREAM"], cfg["FREQUENCY_PENALTY"], cfg["PRESENCE_PENALTY"], cfg["REASONING_EFFORT"], cfg["STOP"])
 	fmt.Fprintf(os.Stderr, "Conversation file: %s\n\n", convFile)
-	fmt.Fprintln(os.Stderr, "Type your message and end it by Ctrl+D. Commands: /exit /quit /history /clear /save <file> /persist-system (see help)")
+	fmt.Fprintln(os.Stderr, "Type your message and end it by Ctrl+D. See /help for commands")
 
 	// trap SIGINT handled by default (Ctrl+C ends program)
 
