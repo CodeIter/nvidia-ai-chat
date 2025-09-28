@@ -44,7 +44,7 @@ var (
 		"deepseek-ai/deepseek-v3.1",
 		"deepseek-ai/deepseek-r1-distill-qwen-32b",
 		"deepseek-ai/deepseek-r1-distill-llama-8b",
-		"deepseek-r1-0528",
+		"deepseek-ai/deepseek-r1-0528",
 		"qwen/qwen3-next-80b-a3b-instruct",
 		"qwen/qwen3-next-80b-a3b-thinking",
 		"moonshotai/kimi-k2-instruct-0905",
