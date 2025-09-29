@@ -11,7 +11,6 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -81,11 +80,7 @@ type ConversationFile struct {
 }
 
 func tput(name string) string {
-	out, err := exec.Command("tput", name).Output()
-	if err != nil {
-		return ""
-	}
-	return string(out)
+	return ""
 }
 
 var (
@@ -95,6 +90,29 @@ var (
 	green  = tput("setaf 2")
 	red    = tput("setaf 1")
 )
+
+func printInteractiveHelp() {
+	var builder strings.Builder
+	builder.WriteString(fmt.Sprintf("%sInteractive Commands:%s\n", bold, normal))
+	builder.WriteString("  /help                 Show this help message.\n")
+	builder.WriteString("  /exit, /quit          Exit the program.\n")
+	builder.WriteString("  /history              Print full conversation JSON.\n")
+	builder.WriteString("  /clear                Clear conversation messages.\n")
+	builder.WriteString("  /save <file>          Save conversation to a new file.\n")
+	builder.WriteString("  /list                 List supported models.\n")
+	builder.WriteString("  /model <model_name>   Switch model for the session.\n")
+	builder.WriteString("  /modelinfo [name]     List settings for a model (defaults to current).\n")
+	builder.WriteString("  /askfor_model_setting Interactively set model parameters.\n")
+	builder.WriteString("  /persist-settings     Save the current session's settings to the conversation file.\n")
+	builder.WriteString("  /persist-system <file>\n                        Persist a system prompt from a file.\n")
+	builder.WriteString("  /exportlast [-t] <file>\n                        Export last AI response to a markdown file (-t filters thinking).\n")
+	builder.WriteString("  /exportlastn [-t] <n> <file>\n                        Export last n AI responses.\n")
+	builder.WriteString("  /exportn [-t] <n> <file>\n                        Export the Nth-to-last AI response.\n")
+	builder.WriteString("  /randomodel           Switch to a random supported model.\n\n")
+	builder.WriteString("For any model setting, you can use `/setting_name <value>` or `/setting_name unset`.\n")
+	builder.WriteString("For example: `/temperature 0.8`, `/stop unset`\n\n")
+	fmt.Print(builder.String())
+}
 
 func printHelp(cfg map[string]string) {
 	var builder strings.Builder
@@ -1269,7 +1287,7 @@ func main() {
 	}
 
 	// Interactive banner
-	fmt.Fprintln(os.Stderr)
+	fmt.Fprint(os.Stderr, "\n")
 	fmt.Fprintln(os.Stderr, `AI models generate responses and outputs based on complex algorithms and
 machine learning techniques, and those responses or outputs may be
 inaccurate, harmful, biased or indecent. By testing this model, you assume
@@ -1665,7 +1683,7 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 	// --- Static commands ---
 	switch commandName {
 	case "exit", "quit":
-		fmt.Fprintln(os.Stderr, "Bye.")
+		fmt.Fprint(os.Stderr, "Bye.\n")
 		os.Exit(0)
 		return true
 	case "history":
@@ -1760,8 +1778,14 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 		cfg["MODEL"] = newModel
 		fmt.Fprintf(os.Stderr, "%sSwitched model to %s%s\n", green, newModel, normal)
 		return true
+	case "list":
+		fmt.Fprintf(os.Stderr, "%sSupported models:%s\n", bold, normal)
+		for _, m := range modelsList {
+			fmt.Fprintf(os.Stderr, "  %s\n", m)
+		}
+		return true
 	case "help":
-		printHelp(cfg)
+		printInteractiveHelp()
 		return true
 	case "model":
 		if len(parts) < 2 {
@@ -1787,18 +1811,70 @@ func handleInteractiveInput(userInput, convFile string, cfg map[string]string) b
 		fmt.Fprintf(os.Stderr, "%sModel set to %s%s\n", green, modelName, normal)
 		return true
 	case "modelinfo":
+		var modelName string
 		if len(parts) < 2 {
-			fmt.Fprintln(os.Stderr, "Usage: /modelinfo <model_name>")
+			modelName = cfg["MODEL"]
+		} else {
+			modelName = parts[1]
+		}
+
+		// Validate that the model is known before proceeding
+		found := false
+		for _, m := range modelsList {
+			if m == modelName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Fprintf(os.Stderr, "%sError: Model '%s' not found in the list of supported models.%s\n", red, modelName, normal)
 			return true
 		}
-		modelName := parts[1]
-		modelDef, exists := ModelDefinitions[modelName]
-		if !exists {
-			fmt.Fprintf(os.Stderr, "%sError: Model '%s' not found.%s\n", red, modelName, normal)
-			return true
-		}
+
+		modelDef := GetModelDefinition(modelName) // This will fall back to 'others' if no specific def
 		info := getModelInfoString(modelName, modelDef)
 		fmt.Fprint(os.Stderr, info)
+		return true
+
+	case "askfor_model_setting":
+		modelDef := GetModelDefinition(cfg["MODEL"])
+		paramNames := make([]string, 0, len(modelDef.Parameters))
+		for name := range modelDef.Parameters {
+			paramNames = append(paramNames, name)
+		}
+		sort.Strings(paramNames)
+
+		allConfigurableParams := append(paramNames, "stream", "history_limit")
+
+		fmt.Fprintln(os.Stderr, "Interactively configure settings. Press Enter to keep the current value.")
+
+		for _, paramName := range allConfigurableParams {
+			configKey := strings.ToUpper(paramName)
+			currentValue, _ := cfg[configKey]
+
+			fmt.Fprintf(os.Stderr, "\nParameter: %s [current: %s]\nEnter new value: ", paramName, currentValue)
+
+			newValue, err := readSingleLine(nil, []string{"\n"}, true)
+			if err != nil && err != io.EOF {
+				fmt.Fprintf(os.Stderr, "%sError reading input: %v%s\n", red, err, normal)
+				break
+			}
+
+			newValue = strings.TrimSpace(newValue)
+			if newValue == "" {
+				fmt.Fprintln(os.Stderr, "  (value unchanged)")
+				continue
+			}
+
+			if err := validateParameter(paramName, newValue, modelDef); err != nil {
+				fmt.Fprintf(os.Stderr, "%s  Error: %v%s\n", red, err, normal)
+				continue
+			}
+
+			cfg[configKey] = newValue
+			fmt.Fprintf(os.Stderr, "  %sSet to %s%s\n", green, newValue, normal)
+		}
+		fmt.Fprintf(os.Stderr, "\n%sFinished updating settings.%s\n", green, normal)
 		return true
 	}
 
