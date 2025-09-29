@@ -62,9 +62,9 @@ type ModelSettings map[string]interface{}
 
 // TopLevelSettings holds the overall settings in the conversation file.
 type TopLevelSettings struct {
-	Stream       bool                   `json:"stream"`
-	HistoryLimit int                    `json:"history_limit"`
-	Default      ModelSettings          `json:"default"`
+	Stream       bool                     `json:"stream"`
+	HistoryLimit int                      `json:"history_limit"`
+	Default      ModelSettings            `json:"default"`
 	Models       map[string]ModelSettings `json:"models"`
 }
 
@@ -876,7 +876,7 @@ func main() {
 	PERSIST_SYSTEM := false
 	SAVE_SETTINGS := false
 	LIST_ONLY := false
-	PROMPT_MODE := "" // for --prompt
+	PROMPT_MODE := ""     // for --prompt
 	MODEL_INFO_FLAG := "" // for --modelinfo
 
 	// helper to get next argument (used when flag and its value are separate tokens)
