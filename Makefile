@@ -1,7 +1,6 @@
 # Makefile for nvidia-ai-chat
 
 APP_NAME := nvidia-ai-chat
-SRC := main.go
 BIN := $(APP_NAME)
 
 # Detect OS for Windows binary name
@@ -15,7 +14,7 @@ all: build
 
 build:
 	@echo "Building $(BIN)..."
-	go build -o $(BIN) $(SRC)
+	go build -o $(BIN) .
 
 run: build
 	@echo "Running $(BIN)..."
