@@ -8,9 +8,11 @@ ifeq ($(OS),Windows_NT)
 	BIN := $(APP_NAME).exe
 endif
 
-.PHONY: all build run clean
+.PHONY: all build cross-compile build-linux build-windows build-macos run clean
 
 all: build
+
+cross-compile: build-linux build-windows build-macos
 
 build:
 	@echo "Building $(BIN)..."
@@ -19,12 +21,6 @@ build:
 run: build
 	@echo "Running $(BIN)..."
 	./$(BIN)
-
-clean:
-	@echo "Cleaning up..."
-	rm -f $(APP_NAME) $(APP_NAME).exe nvidia-ai-chat-*-amd64 nvidia-ai-chat-*-amd64.exe
-
-.PHONY: build-linux build-windows build-macos
 
 build-linux:
 	@echo "Building for Linux (amd64)..."
@@ -37,4 +33,8 @@ build-windows:
 build-macos:
 	@echo "Building for macOS (amd64)..."
 	GOOS=darwin GOARCH=amd64 go build -o nvidia-ai-chat-darwin-amd64 .
+
+clean:
+	@echo "Cleaning up..."
+	rm -f $(APP_NAME) $(APP_NAME).exe nvidia-ai-chat-*-amd64 nvidia-ai-chat-*-amd64.exe
 
