@@ -22,5 +22,19 @@ run: build
 
 clean:
 	@echo "Cleaning up..."
-	rm -f $(APP_NAME) $(APP_NAME).exe
+	rm -f $(APP_NAME) $(APP_NAME).exe nvidia-ai-chat-*-amd64 nvidia-ai-chat-*-amd64.exe
+
+.PHONY: build-linux build-windows build-macos
+
+build-linux:
+	@echo "Building for Linux (amd64)..."
+	GOOS=linux GOARCH=amd64 go build -o nvidia-ai-chat-linux-amd64 .
+
+build-windows:
+	@echo "Building for Windows (amd64)..."
+	GOOS=windows GOARCH=amd64 go build -o nvidia-ai-chat-windows-amd64.exe .
+
+build-macos:
+	@echo "Building for macOS (amd64)..."
+	GOOS=darwin GOARCH=amd64 go build -o nvidia-ai-chat-darwin-amd64 .
 
